@@ -1,0 +1,2319 @@
+---
+title: "Model fitting"
+author: "Arthur M. Albuquerque"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+          toc: yes
+          toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Ensures the package "groundhog" is installed
+if (!require("groundhog")) install.packages("groundhog")
+
+pkgs = c("rio",
+         "here",
+         "dplyr",
+         "multinma",
+         "metafor",
+         "ggdist",
+         "posterior",
+         "brms",
+         "tidybayes",
+         "bayesplot",
+         "ggraph",
+         "igraph",
+         "MetBrewer",
+         "Hmisc") # %nin%
+
+# Install/Load packages
+
+groundhog::groundhog.library(pkgs, "2022-03-14")
+
+# Load custom function for model diagnostics
+
+source(here::here("functions", "diag_plot.R"))
+
+# Load original data extraction file
+
+d = rio::import(here::here("data", "data.xlsx")) 
+
+# Modify data file
+
+d_mod =
+  d |> 
+  dplyr::select(study:num_patients_t1, num_patients_t2) |> 
+  # won't analyze it
+  dplyr::filter(outcome %nin% c("MACE_Per_Protocol", "ISTH_Bleed_Maj")) |>  
+  
+  dplyr::mutate(outcome =
+                  # Unify all safety outcomes as one, "safety"
+                  ifelse(outcome %nin% c("AMI",
+                                         "Isch_Stroke",
+                                         "Cardio_Death",
+                                         "Any_Death",
+                                         "MACE_ITT"),
+                         "safety", outcome),
+                # Calculate mean effect size and SE in log scale
+                # https://training.cochrane.org/handbook/current/chapter-06#section-6-3-2
+                effect_size = log(mean),
+                SE = (log(upperCI) - log(lowerCI))/3.92)
+
+
+```
+
+
+# Exploratory Data Analysis
+
+## Treatments
+
+```{r}
+d_mod |> 
+  dplyr::distinct(treatment1)
+```
+
+## Outcomes
+
+```{r}
+d_mod |> 
+  dplyr::distinct(outcome) |> 
+  dplyr::mutate(description = dplyr::case_when(
+    outcome == "MACE_ITT" ~ "MACE", 
+    outcome == "Any_Death" ~ "Death from all causes",
+    outcome == "Cardio_Death" ~ "Cardiovascular deaths",
+    outcome == "Isch_Stroke" ~ "Ischemic stroke",
+    outcome == "AMI" ~ "Acute myocardial infarction",
+    outcome == "safety" ~ "Trial-defined primary bleeding outcome"
+  ))
+```
+
+
+# Formulas
+
+These formulas are necessary to account for the within-study correlation in
+studies with 3 treatment arms.
+
+See doi: 10.1186/1471-2288-10-54 for further details.
+
+```{r}
+# Equation 9 in doi:10.1186/1471-2288-10-54
+
+se_k1_vs_k2 = function(se_k1_vs_control, # Standard error of k1 vs. control contrast
+                       se_k2_vs_control, # SE of k2 vs. control
+                       n_k1,             # Number of participants in k1 arm
+                       n_k2,             # Number of participants in k2 arm
+                       n_control         # Number of participants in control arm
+                       ){
+  # Standard error of k1 vs. k2 contrast
+  # Where k1 is experimental drug "1", such as 60_Ticagrelor in THEMIS,
+  #       k2 is experimental drug "2", such as 90_Ticagrelor in THEMIS, and
+  #       control is AAS
+  
+  sqrt(
+    ((se_k1_vs_control^2 + se_k2_vs_control^2) *
+       (1/n_k1 + 1/n_k2)) /
+  (1/n_k1 + 1/n_k2 + 2/n_control)
+  )
+}
+
+# Equation 7 in doi:10.1186/1471-2288-10-54
+
+se_control = function(se_k1_vs_control, # Standard error of k1 vs. control contrast
+                      se_k2_vs_control, # SE of k2 vs. control
+                      se_k1_vs_k2){     # SE of k1 vs. k2 (formula above)
+  sqrt(
+    (se_k1_vs_control^2 + se_k2_vs_control^2 - se_k1_vs_k2^2)/2
+  )
+}
+```
+
+# Data-frames
+
+```{r}
+# Define base dataframe with MACE data
+# data wrangle to adapt to multinma's data format
+d_MACE = 
+  d_mod |> 
+  # Only MACE
+  dplyr::filter(outcome == "MACE_ITT") |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1, treatment2, num_patients_t1,
+                num_patients_t2, effect_size, SE) |> 
+  # Turn into wide for data analysis
+  tidyr::pivot_longer(-study,
+                      names_to = c(".value"),
+                      names_pattern = "(..)") |> 
+  # Rename columns
+  magrittr::set_colnames(c("study", "treatment", "n_patients", 
+                           "logHR", "std.err")) |> 
+  dplyr::arrange(study) |> 
+  
+  # Keep only 1 NA row per study
+  dplyr::group_by(study, treatment) |> 
+  dplyr::filter(!(duplicated(std.err))) 
+
+
+```
+
+The PEGASUS trial did not report their safety outcomes for pooled ticagrelor
+(as they did for efficacy outcomes in their Figure 2
+https://www.nejm.org/doi/full/10.1056/NEJMoa1500857).
+
+However, in their Table 3, hazard ratios from safety outcomes are reported for
+Ticagrelor 90mg vs. Placebo and Ticagrelor 60mg. Thus, we will now estimate the
+corresponding "Pooled Ticagrelor vs. Placebo" hazard ratio by fitting a fixed
+meta-analysis with both hazard ratios on the TIMI major bleeding outcome.
+
+
+```{r}
+
+pegasus_safety = 
+  d_mod |> 
+  # Select only PEGASUS 60 and 90mg safety data
+  dplyr::filter(study == "PEGASUS",
+                outcome == "safety")
+
+# Fit fixed effect meta-analysis
+fe_ma_safety = 
+  metafor::rma.uni(data = pegasus_safety, 
+                   yi = effect_size,
+                   sei = SE, 
+                   method="FE",
+                   slab = treatment1) 
+
+# Create new data frame with Pooled Tica from PEGASUS safety
+d_mod_safety = 
+  dplyr::bind_rows(d_mod,
+                   data.frame(study = "PEGASUS",
+                              prev_acs = 1,
+                              outcome = "safety",
+                              treatment1 = "Pooled_Ticagrelor",
+                              treatment2 = "AAS",
+                              num_patients_t1 =
+                                sum(pegasus_safety$num_patients_t1),
+                              num_patients_t2 = 
+                                unique(pegasus_safety$num_patients_t2),
+                              effect_size = fe_ma_safety$beta,
+                              SE = fe_ma_safety$se))
+
+# Define base dataframe with safety data
+# data wrangle to adapt to multinma's data format
+d_safety = 
+  d_mod_safety |> 
+  # Only safety
+  dplyr::filter(outcome == "safety") |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1, treatment2, num_patients_t1,
+                num_patients_t2, effect_size, SE) |> 
+  # Turn into wide for data analysis
+  tidyr::pivot_longer(-study,
+                      names_to = c(".value"),
+                      names_pattern = "(..)") |> 
+  # Rename columns
+  magrittr::set_colnames(c("study", "treatment", "n_patients", 
+                           "logHR", "std.err")) |> 
+  dplyr::arrange(study) |> 
+  
+  # Keep only 1 NA row per study
+  dplyr::group_by(study, treatment) |> 
+  dplyr::filter(!(duplicated(std.err))) 
+```
+
+```{r}
+# Define base dataframe with AMI data
+# data wrangle to adapt to multinma's data format
+d_AMI = 
+  d_mod |> 
+  # Only MACE
+  dplyr::filter(outcome == "AMI") |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1, treatment2, num_patients_t1,
+                num_patients_t2, effect_size, SE) |> 
+  # Turn into wide for data analysis
+  tidyr::pivot_longer(-study,
+                      names_to = c(".value"),
+                      names_pattern = "(..)") |> 
+  # Rename columns
+  magrittr::set_colnames(c("study", "treatment", "n_patients", 
+                           "logHR", "std.err")) |> 
+  dplyr::arrange(study) |> 
+  
+  # Keep only 1 NA row per study
+  dplyr::group_by(study, treatment) |> 
+  dplyr::filter(!(duplicated(std.err))) 
+
+
+```
+
+```{r}
+# Define base dataframe with Isch_Stroke data
+# data wrangle to adapt to multinma's data format
+d_Isch_Stroke = 
+  d_mod |> 
+  # Only MACE
+  dplyr::filter(outcome == "Isch_Stroke") |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1, treatment2, num_patients_t1,
+                num_patients_t2, effect_size, SE) |> 
+  # Turn into wide for data analysis
+  tidyr::pivot_longer(-study,
+                      names_to = c(".value"),
+                      names_pattern = "(..)") |> 
+  # Rename columns
+  magrittr::set_colnames(c("study", "treatment", "n_patients", 
+                           "logHR", "std.err")) |> 
+  dplyr::arrange(study) |> 
+  
+  # Keep only 1 NA row per study
+  dplyr::group_by(study, treatment) |> 
+  dplyr::filter(!(duplicated(std.err))) 
+
+
+```
+
+```{r}
+# Define base dataframe with All-cause Mortality data
+# data wrangle to adapt to multinma's data format
+d_Any_Death = 
+  d_mod |> 
+  # Only MACE
+  dplyr::filter(outcome == "Any_Death") |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1, treatment2, num_patients_t1,
+                num_patients_t2, effect_size, SE) |> 
+  # Turn into wide for data analysis
+  tidyr::pivot_longer(-study,
+                      names_to = c(".value"),
+                      names_pattern = "(..)") |> 
+  # Rename columns
+  magrittr::set_colnames(c("study", "treatment", "n_patients", 
+                           "logHR", "std.err")) |> 
+  dplyr::arrange(study) |> 
+  
+  # Keep only 1 NA row per study
+  dplyr::group_by(study, treatment) |> 
+  dplyr::filter(!(duplicated(std.err))) 
+
+
+```
+
+```{r}
+# Define base dataframe with Cardiovascular Mortality data
+# data wrangle to adapt to multinma's data format
+d_Cardio_Death = 
+  d_mod |> 
+  # Only MACE
+  dplyr::filter(outcome == "Cardio_Death") |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1, treatment2, num_patients_t1,
+                num_patients_t2, effect_size, SE) |> 
+  # Turn into wide for data analysis
+  tidyr::pivot_longer(-study,
+                      names_to = c(".value"),
+                      names_pattern = "(..)") |> 
+  # Rename columns
+  magrittr::set_colnames(c("study", "treatment", "n_patients", 
+                           "logHR", "std.err")) |> 
+  dplyr::arrange(study) |> 
+  
+  # Keep only 1 NA row per study
+  dplyr::group_by(study, treatment) |> 
+  dplyr::filter(!(duplicated(std.err))) 
+
+
+```
+
+# Pooled Ticagrelor Networks
+
+## MACE
+
+```{r}
+# Calculate control arm's log hazard standard error for studies with more 
+# > 2 treatment arms in the "Pooled" network
+
+MACE_tica_pooled_se_control = 
+  d_mod |> 
+  # Only MACE, and remove 60 and 90mg Ticagrelor data
+  dplyr::filter(outcome == "MACE_ITT", 
+                treatment1 %nin% c("60_Ticagrelor", "90_Ticagrelor")) |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1,
+                num_patients_t1, num_patients_t2, SE) |> 
+  # Only keep studies with > 2 treatment arms
+  # https://stackoverflow.com/questions/32259620/how-to-remove-unique-entry-and-keep-duplicates-in-r
+  dplyr::group_by(study) |>
+  dplyr::filter( n() > 1) |> 
+  # Data wrangle to apply formulas later
+  dplyr::arrange(study, treatment1) |>
+  dplyr::mutate(k2 = dplyr::lead(treatment1),
+                num_patients_k2 = dplyr::lead(num_patients_t1),
+                se_k2 = dplyr::lead(SE)) |> 
+  dplyr::ungroup() |> 
+  dplyr::filter(!is.na(se_k2)) |> 
+  dplyr::rename("k1" = treatment1,
+                "num_patients_control" = num_patients_t2,
+                "num_patients_k1" = num_patients_t1,
+                "se_k1" = SE) |> 
+  # Apply formulas from doi:10.1186/1471-2288-10-54
+  # to calculate the control arm's log hazard SE (se_control)
+  dplyr::mutate(se_k1_k2 = se_k1_vs_k2(se_k1_vs_control = se_k1,
+                                       se_k2_vs_control = se_k2,
+                                       n_k1 = num_patients_k1, 
+                                       n_k2 = num_patients_k2,
+                                       n_control = num_patients_control
+                                       ),
+                se_control = se_control(se_k1_vs_control = se_k1,
+                                        se_k2_vs_control = se_k2,
+                                        se_k1_vs_k2 = se_k1_k2)
+                  ) |> 
+  dplyr::select(study, se_control)
+```
+
+```{r}
+# MACE Pooled dataframe
+d_MACE_pooled = d_MACE |> subset(treatment %nin%
+                                   c("60_Ticagrelor","90_Ticagrelor"))
+
+# Insert previously calculated control's log hazard SE in these dataframes
+
+### Pooled
+
+d_MACE_pooled[
+  # Filter only studies that contain >2 treatment arms
+  d_MACE_pooled$study %in% MACE_tica_pooled_se_control$study
+  # Get NA cell (which corresponds to the control arm)
+  & is.na(d_MACE_pooled$std.err),
+  # Select column of interest
+  "std.err"] =
+  # Insert log hazard SE
+  MACE_tica_pooled_se_control$se_control
+```
+
+
+### Forest
+
+```{r}
+with(d_MACE_pooled |> dplyr::filter(!is.na(logHR)),
+  
+  metafor::forest(x = logHR,
+                  sei = std.err,
+                  slab = paste0(study, " ", treatment),
+                  atransf = exp)
+)
+```
+
+
+
+### Analysis
+
+```{r}
+MACE_pooled_contrast = multinma::set_agd_contrast(d_MACE_pooled,
+                                                  trt_ref = "AAS",
+                                                  study = study,
+                                                  trt = treatment,
+                                                  y = logHR,
+                                                  se = std.err,
+                                                  sample_size = n_patients)
+
+MACE_pooled_contrast
+
+```
+
+
+```{r}
+plot(MACE_pooled_contrast, weight_edges = TRUE)
+```
+
+```{r}
+# Check if there are direct and indirect estimates for the same treatment
+# comparisons
+
+# tldr, there aren't! 
+
+multinma::get_nodesplits(MACE_pooled_contrast)
+```
+
+Weakly informative prior elicitation following Rover et al., 2021
+"Section 3.4.4 | Implications of a heterogeneity distribution"
+doi: 10.1002/jrsm.1475
+
+We want to set a 95% predictive distribution approximately between $0.2$
+(-1.61 in the log scale) and $5.0$ (1.61 log scale) hazard ratio, because 80%
+reduction or 500% increase in  MACE hazard are highly implausible in 
+cardiovascular research.
+
+Marginal prior predictive distribution with $\tau \sim Half-Normal(0.73)$:
+
+```{r}
+set.seed(123)
+N = 10e4
+
+dplyr::tibble(mu = 0,
+              tau = abs(rnorm(N, mean = mu, sd = 0.73)),
+              theta = rnorm(N, mean = mu, sd = tau)) |> 
+  ggdist::median_hdi(theta) |>  
+  dplyr::select(theta, .lower, .upper) |>  
+  dplyr::rename("Mean" = theta,
+                "2.5th" = .lower,
+                "97.5th" = .upper)
+```
+
+Thus, we propose a $Half-Normal(0.73)$: prior for log-HR based on the implied
+prediction interval for exp($\theta_i - \mu$) of $[0.2, 5.0]$.
+
+
+```{r}
+## FE
+# network_MACE_pooled_FE = 
+#   multinma::nma(MACE_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "fixed",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+
+# save(network_MACE_pooled_FE,
+#      file = here::here("output/fits/pooled_MACE_FE.RData"))
+
+load(here::here("output/fits/pooled_MACE_FE.RData"))
+
+
+
+## RE
+# network_MACE_pooled_RE = 
+#   multinma::nma(MACE_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "random",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 prior_het_type = "sd",
+#                 prior_het = multinma::half_normal(scale = 0.73),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_MACE_pooled_RE,
+#      file = here::here("output/fits/pooled_MACE_RE.RData"))
+
+load(here::here("output/fits/pooled_MACE_RE.RData"))
+
+```
+
+Model comparison
+
+```{r}
+loo_FE = loo::loo(network_MACE_pooled_FE)
+loo_RE = loo::loo(network_MACE_pooled_RE)
+
+loo::loo_compare(loo_FE, loo_RE)
+```
+
+```{r}
+waic_FE = loo::waic(network_MACE_pooled_FE)
+waic_RE = loo::waic(network_MACE_pooled_RE)
+
+loo::loo_compare(waic_FE, waic_RE)
+```
+
+```{r}
+dic_FE = multinma::dic(network_MACE_pooled_FE)
+dic_RE = multinma::dic(network_MACE_pooled_RE)
+
+data.frame(model = c("FE", "RE"),
+           DIC = c(dic_FE$dic, dic_RE$dic))
+```
+
+
+```{r}
+diag_plot(model = network_MACE_pooled_FE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+```{r}
+diag_plot(model = network_MACE_pooled_RE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+
+
+```{r}
+plot(network_MACE_pooled_FE, pars = "d",
+     stat = "halfeye",
+      point_interval = ggdist::median_hdi,
+     .width = 0.95,
+     ref_line = 0) + 
+  aes(fill = stat(x < 0)) +
+  scale_x_continuous(breaks = log(seq(0.2, 1.8, 0.2)),
+                     labels = seq(0.2, 1.8, 0.2),
+                     limits = log(c(0.4, 2)))
+```
+
+## Bleeding
+
+
+```{r}
+# Calculate control arm's log hazard standard error for studies with more 
+# > 2 treatment arms in the "Pooled" network
+
+safety_tica_pooled_se_control = 
+  d_mod_safety |> 
+  # Only safety, and remove 60 and 90mg Ticagrelor data
+  dplyr::filter(outcome == "safety", 
+                treatment1 %nin% c("60_Ticagrelor", "90_Ticagrelor")) |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1,
+                num_patients_t1, num_patients_t2, SE) |> 
+  # Only keep studies with > 2 treatment arms
+  # https://stackoverflow.com/questions/32259620/how-to-remove-unique-entry-and-keep-duplicates-in-r
+  dplyr::group_by(study) |>
+  dplyr::filter( n() > 1) |> 
+  # Data wrangle to apply formulas later
+  dplyr::arrange(study, treatment1) |>
+  dplyr::mutate(k2 = dplyr::lead(treatment1),
+                num_patients_k2 = dplyr::lead(num_patients_t1),
+                se_k2 = dplyr::lead(SE)) |> 
+  dplyr::ungroup() |> 
+  dplyr::filter(!is.na(se_k2)) |> 
+  dplyr::rename("k1" = treatment1,
+                "num_patients_control" = num_patients_t2,
+                "num_patients_k1" = num_patients_t1,
+                "se_k1" = SE) |> 
+  # Apply formulas from doi:10.1186/1471-2288-10-54
+  # to calculate the control arm's log hazard SE (se_control)
+  dplyr::mutate(se_k1_k2 = se_k1_vs_k2(se_k1_vs_control = se_k1,
+                                       se_k2_vs_control = se_k2,
+                                       n_k1 = num_patients_k1, 
+                                       n_k2 = num_patients_k2,
+                                       n_control = num_patients_control
+                                       ),
+                se_control = se_control(se_k1_vs_control = se_k1,
+                                        se_k2_vs_control = se_k2,
+                                        se_k1_vs_k2 = se_k1_k2)
+                  ) |> 
+  dplyr::select(study, se_control)
+```
+
+
+
+```{r}
+# safety Pooled dataframe
+d_safety_pooled = d_safety |> subset(treatment %nin%
+                                   c("60_Ticagrelor","90_Ticagrelor"))
+
+# Insert previously calculated control's log hazard SE in these dataframes
+
+### Pooled
+
+d_safety_pooled[
+  # Filter only studies that contain >2 treatment arms
+  d_safety_pooled$study %in% safety_tica_pooled_se_control$study
+  # Get NA cell (which corresponds to the control arm)
+  & is.na(d_safety_pooled$std.err),
+  # Select column of interest
+  "std.err"] =
+  # Insert log hazard SE
+  safety_tica_pooled_se_control$se_control
+
+
+```
+
+### Forest
+
+```{r}
+with(d_safety_pooled |> dplyr::filter(!is.na(logHR)),
+  
+  metafor::forest(x = logHR,
+                  sei = std.err,
+                  slab = paste0(study, " ", treatment),
+                  atransf = exp,
+                  xlab = "Hazard Ratio")
+)
+```
+
+
+
+### Analysis
+
+```{r}
+safety_pooled_contrast = multinma::set_agd_contrast(d_safety_pooled,
+                                                  trt_ref = "AAS",
+                                                  study = study,
+                                                  trt = treatment,
+                                                  y = logHR,
+                                                  se = std.err,
+                                                  sample_size = n_patients)
+
+safety_pooled_contrast
+
+```
+
+
+```{r}
+plot(safety_pooled_contrast, weight_edges = TRUE)
+```
+
+```{r}
+# Check if there are direct and indirect estimates for the same treatment
+# comparisons
+
+# tldr, there aren't! 
+
+multinma::get_nodesplits(safety_pooled_contrast)
+```
+
+Weakly informative prior elicitation following Rover et al., 2021
+"Section 3.4.4 | Implications of a heterogeneity distribution"
+doi: 10.1002/jrsm.1475
+
+We want to set a 95% predictive distribution approximately between $0.2$
+(-1.61 in the log scale) and $5.0$ (1.61 log scale) hazard ratio, because 80%
+reduction or 500% increase in  MACE hazard are highly implausible in 
+cardiovascular research.
+
+Marginal prior predictive distribution with $\tau \sim Half-Normal(0.73)$:
+
+```{r}
+set.seed(123)
+N = 10e4
+
+dplyr::tibble(mu = 0,
+              tau = abs(rnorm(N, mean = mu, sd = 0.73)),
+              theta = rnorm(N, mean = mu, sd = tau)) |> 
+  ggdist::median_hdi(theta) |>  
+  dplyr::select(theta, .lower, .upper) |>  
+  dplyr::rename("Mean" = theta,
+                "2.5th" = .lower,
+                "97.5th" = .upper)
+```
+
+Thus, we propose a $Half-Normal(0.73)$: prior for log-HR based on the implied
+prediction interval for exp($\theta_i - \mu$) of $[0.2, 5.0]$.
+
+
+```{r}
+## FE
+# network_safety_pooled_FE = 
+#   multinma::nma(safety_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "fixed",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_safety_pooled_FE,
+#      file = here::here("output/fits/pooled_safety_FE.RData"))
+ 
+load(here::here("output/fits/pooled_safety_FE.RData"))
+
+
+
+## RE
+# network_safety_pooled_RE = 
+#   multinma::nma(safety_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "random",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 prior_het_type = "sd",
+#                 prior_het = multinma::half_normal(scale = 0.73),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_safety_pooled_RE,
+#      file = here::here("output/fits/pooled_safety_RE.RData"))
+
+load(here::here("output/fits/pooled_safety_RE.RData"))
+
+```
+
+Model comparison
+
+```{r}
+loo_FE = loo::loo(network_safety_pooled_FE)
+loo_RE = loo::loo(network_safety_pooled_RE)
+
+loo::loo_compare(loo_FE, loo_RE)
+```
+
+```{r}
+waic_FE = loo::waic(network_safety_pooled_FE)
+waic_RE = loo::waic(network_safety_pooled_RE)
+
+loo::loo_compare(waic_FE, waic_RE)
+```
+
+```{r}
+dic_FE = multinma::dic(network_safety_pooled_FE)
+dic_RE = multinma::dic(network_safety_pooled_RE)
+
+data.frame(model = c("FE", "RE"),
+           DIC = c(dic_FE$dic, dic_RE$dic))
+```
+
+
+```{r}
+diag_plot(model = network_safety_pooled_FE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+```{r}
+diag_plot(model = network_safety_pooled_RE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+
+
+```{r}
+plot(network_safety_pooled_FE, pars = "d",
+     stat = "halfeye",
+      point_interval = ggdist::median_hdi,
+     .width = 0.95,
+     ref_line = 0) + 
+  aes(fill = stat(x > 0)) +
+  scale_x_continuous(breaks = log(seq(0, 4, 0.5)),
+                     labels = seq(0, 4, 0.5),
+                     limits = log(c(0.4, 4)))
+```
+
+
+## AMI
+
+```{r}
+# Calculate control arm's log hazard standard error for studies with more 
+# > 2 treatment arms in the "Pooled" network
+
+AMI_tica_pooled_se_control = 
+  d_mod |> 
+  # Only AMI, and remove 60 and 90mg Ticagrelor data
+  dplyr::filter(outcome == "AMI", 
+                treatment1 %nin% c("60_Ticagrelor", "90_Ticagrelor")) |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1,
+                num_patients_t1, num_patients_t2, SE) |> 
+  # Only keep studies with > 2 treatment arms
+  # https://stackoverflow.com/questions/32259620/how-to-remove-unique-entry-and-keep-duplicates-in-r
+  dplyr::group_by(study) |>
+  dplyr::filter( n() > 1) |> 
+  # Data wrangle to apply formulas later
+  dplyr::arrange(study, treatment1) |>
+  dplyr::mutate(k2 = dplyr::lead(treatment1),
+                num_patients_k2 = dplyr::lead(num_patients_t1),
+                se_k2 = dplyr::lead(SE)) |> 
+  dplyr::ungroup() |> 
+  dplyr::filter(!is.na(se_k2)) |> 
+  dplyr::rename("k1" = treatment1,
+                "num_patients_control" = num_patients_t2,
+                "num_patients_k1" = num_patients_t1,
+                "se_k1" = SE) |> 
+  # Apply formulas from doi:10.1186/1471-2288-10-54
+  # to calculate the control arm's log hazard SE (se_control)
+  dplyr::mutate(se_k1_k2 = se_k1_vs_k2(se_k1_vs_control = se_k1,
+                                       se_k2_vs_control = se_k2,
+                                       n_k1 = num_patients_k1, 
+                                       n_k2 = num_patients_k2,
+                                       n_control = num_patients_control
+                                       ),
+                se_control = se_control(se_k1_vs_control = se_k1,
+                                        se_k2_vs_control = se_k2,
+                                        se_k1_vs_k2 = se_k1_k2)
+                  ) |> 
+  dplyr::select(study, se_control)
+```
+
+```{r}
+# AMI Pooled dataframe
+d_AMI_pooled = d_AMI |> subset(treatment %nin%
+                                   c("60_Ticagrelor","90_Ticagrelor"))
+
+# Insert previously calculated control's log hazard SE in these dataframes
+
+### Pooled
+
+d_AMI_pooled[
+  # Filter only studies that contain >2 treatment arms
+  d_AMI_pooled$study %in% AMI_tica_pooled_se_control$study
+  # Get NA cell (which corresponds to the control arm)
+  & is.na(d_AMI_pooled$std.err),
+  # Select column of interest
+  "std.err"] =
+  # Insert log hazard SE
+  AMI_tica_pooled_se_control$se_control
+```
+
+
+### Forest
+
+```{r}
+with(d_AMI_pooled |> dplyr::filter(!is.na(logHR)),
+  
+  metafor::forest(x = logHR,
+                  sei = std.err,
+                  slab = paste0(study, " ", treatment),
+                  atransf = exp)
+)
+```
+
+
+
+### Analysis
+
+```{r}
+AMI_pooled_contrast = multinma::set_agd_contrast(d_AMI_pooled,
+                                                  trt_ref = "AAS",
+                                                  study = study,
+                                                  trt = treatment,
+                                                  y = logHR,
+                                                  se = std.err,
+                                                  sample_size = n_patients)
+
+AMI_pooled_contrast
+
+```
+
+
+```{r}
+plot(AMI_pooled_contrast, weight_edges = TRUE)
+```
+
+```{r}
+# Check if there are direct and indirect estimates for the same treatment
+# comparisons
+
+# tldr, there aren't! 
+
+multinma::get_nodesplits(AMI_pooled_contrast)
+```
+
+Weakly informative prior elicitation following Rover et al., 2021
+"Section 3.4.4 | Implications of a heterogeneity distribution"
+doi: 10.1002/jrsm.1475
+
+We want to set a 95% predictive distribution approximately between $0.2$
+(-1.61 in the log scale) and $5.0$ (1.61 log scale) hazard ratio, because 80%
+reduction or 500% increase in  AMI hazard are highly implausible in 
+cardiovascular research.
+
+Marginal prior predictive distribution with $\tau \sim Half-Normal(0.73)$:
+
+```{r}
+set.seed(123)
+N = 10e4
+
+dplyr::tibble(mu = 0,
+              tau = abs(rnorm(N, mean = mu, sd = 0.73)),
+              theta = rnorm(N, mean = mu, sd = tau)) |> 
+  ggdist::median_hdi(theta) |>  
+  dplyr::select(theta, .lower, .upper) |>  
+  dplyr::rename("Mean" = theta,
+                "2.5th" = .lower,
+                "97.5th" = .upper)
+```
+
+Thus, we propose a $Half-Normal(0.73)$: prior for log-HR based on the implied
+prediction interval for exp($\theta_i - \mu$) of $[0.2, 5.0]$.
+
+
+```{r}
+## FE
+# network_AMI_pooled_FE = 
+#   multinma::nma(AMI_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "fixed",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_AMI_pooled_FE,
+#      file = here::here("output/fits/pooled_AMI_FE.RData"))
+
+load(here::here("output/fits/pooled_AMI_FE.RData"))
+
+
+
+## RE
+# network_AMI_pooled_RE = 
+#   multinma::nma(AMI_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "random",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 prior_het_type = "sd",
+#                 prior_het = multinma::half_normal(scale = 0.73),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_AMI_pooled_RE,
+#      file = here::here("output/fits/pooled_AMI_RE.RData"))
+
+load(here::here("output/fits/pooled_AMI_RE.RData"))
+
+```
+
+Model comparison
+
+```{r}
+loo_FE = loo::loo(network_AMI_pooled_FE)
+loo_RE = loo::loo(network_AMI_pooled_RE)
+
+loo::loo_compare(loo_FE, loo_RE)
+```
+
+```{r}
+waic_FE = loo::waic(network_AMI_pooled_FE)
+waic_RE = loo::waic(network_AMI_pooled_RE)
+
+loo::loo_compare(waic_FE, waic_RE)
+```
+
+```{r}
+dic_FE = multinma::dic(network_AMI_pooled_FE)
+dic_RE = multinma::dic(network_AMI_pooled_RE)
+
+data.frame(model = c("FE", "RE"),
+           DIC = c(dic_FE$dic, dic_RE$dic))
+```
+
+
+```{r}
+diag_plot(model = network_AMI_pooled_FE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+```{r}
+diag_plot(model = network_AMI_pooled_RE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+
+
+```{r}
+plot(network_AMI_pooled_FE, pars = "d",
+     stat = "halfeye",
+      point_interval = ggdist::median_hdi,
+     .width = 0.95,
+     ref_line = 0) + 
+  aes(fill = stat(x < 0)) +
+  scale_x_continuous(breaks = log(seq(0.2, 1.8, 0.2)),
+                     labels = seq(0.2, 1.8, 0.2),
+                     limits = log(c(0.2, 2)))
+```
+
+
+
+## Ischemic Stroke
+
+```{r}
+# Calculate control arm's log hazard standard error for studies with more 
+# > 2 treatment arms in the "Pooled" network
+
+Isch_Stroke_tica_pooled_se_control = 
+  d_mod |> 
+  # Only Isch_Stroke, and remove 60 and 90mg Ticagrelor data
+  dplyr::filter(outcome == "Isch_Stroke", 
+                treatment1 %nin% c("60_Ticagrelor", "90_Ticagrelor")) |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1,
+                num_patients_t1, num_patients_t2, SE) |> 
+  # Only keep studies with > 2 treatment arms
+  # https://stackoverflow.com/questions/32259620/how-to-remove-unique-entry-and-keep-duplicates-in-r
+  dplyr::group_by(study) |>
+  dplyr::filter( n() > 1) |> 
+  # Data wrangle to apply formulas later
+  dplyr::arrange(study, treatment1) |>
+  dplyr::mutate(k2 = dplyr::lead(treatment1),
+                num_patients_k2 = dplyr::lead(num_patients_t1),
+                se_k2 = dplyr::lead(SE)) |> 
+  dplyr::ungroup() |> 
+  dplyr::filter(!is.na(se_k2)) |> 
+  dplyr::rename("k1" = treatment1,
+                "num_patients_control" = num_patients_t2,
+                "num_patients_k1" = num_patients_t1,
+                "se_k1" = SE) |> 
+  # Apply formulas from doi:10.1186/1471-2288-10-54
+  # to calculate the control arm's log hazard SE (se_control)
+  dplyr::mutate(se_k1_k2 = se_k1_vs_k2(se_k1_vs_control = se_k1,
+                                       se_k2_vs_control = se_k2,
+                                       n_k1 = num_patients_k1, 
+                                       n_k2 = num_patients_k2,
+                                       n_control = num_patients_control
+  ),
+  se_control = se_control(se_k1_vs_control = se_k1,
+                          se_k2_vs_control = se_k2,
+                          se_k1_vs_k2 = se_k1_k2)
+  ) |> 
+  dplyr::select(study, se_control)
+```
+
+```{r}
+# Isch_Stroke Pooled dataframe
+d_Isch_Stroke_pooled = d_Isch_Stroke |> subset(treatment %nin%
+                                 c("60_Ticagrelor","90_Ticagrelor"))
+
+# Insert previously calculated control's log hazard SE in these dataframes
+
+### Pooled
+
+d_Isch_Stroke_pooled[
+  # Filter only studies that contain >2 treatment arms
+  d_Isch_Stroke_pooled$study %in% Isch_Stroke_tica_pooled_se_control$study
+  # Get NA cell (which corresponds to the control arm)
+  & is.na(d_Isch_Stroke_pooled$std.err),
+  # Select column of interest
+  "std.err"] =
+  # Insert log hazard SE
+  Isch_Stroke_tica_pooled_se_control$se_control
+```
+
+
+### Forest
+
+```{r}
+with(d_Isch_Stroke_pooled |> dplyr::filter(!is.na(logHR)),
+     
+     metafor::forest(x = logHR,
+                     sei = std.err,
+                     slab = paste0(study, " ", treatment),
+                     atransf = exp)
+)
+```
+
+
+
+### Analysis
+
+```{r}
+Isch_Stroke_pooled_contrast = multinma::set_agd_contrast(d_Isch_Stroke_pooled,
+                                                 trt_ref = "AAS",
+                                                 study = study,
+                                                 trt = treatment,
+                                                 y = logHR,
+                                                 se = std.err,
+                                                 sample_size = n_patients)
+
+Isch_Stroke_pooled_contrast
+
+```
+
+
+```{r}
+plot(Isch_Stroke_pooled_contrast, weight_edges = TRUE)
+```
+
+```{r}
+# Check if there are direct and indirect estimates for the same treatment
+# comparisons
+
+# tldr, there aren't! 
+
+multinma::get_nodesplits(Isch_Stroke_pooled_contrast)
+```
+
+Weakly informative prior elicitation following Rover et al., 2021
+"Section 3.4.4 | Implications of a heterogeneity distribution"
+doi: 10.1002/jrsm.1475
+
+We want to set a 95% predictive distribution approximately between $0.2$
+  (-1.61 in the log scale) and $5.0$ (1.61 log scale) hazard ratio, because 80%
+reduction or 500% increase in  Isch_Stroke hazard are highly implausible in 
+cardiovascular research.
+
+Marginal prior predictive distribution with $\tau \sim Half-Normal(0.73)$:
+  
+```{r}
+set.seed(123)
+N = 10e4
+
+dplyr::tibble(mu = 0,
+              tau = abs(rnorm(N, mean = mu, sd = 0.73)),
+              theta = rnorm(N, mean = mu, sd = tau)) |> 
+  ggdist::median_hdi(theta) |>  
+  dplyr::select(theta, .lower, .upper) |>  
+  dplyr::rename("Mean" = theta,
+                "2.5th" = .lower,
+                "97.5th" = .upper)
+```
+
+Thus, we propose a $Half-Normal(0.73)$: prior for log-HR based on the implied
+prediction interval for exp($\theta_i - \mu$) of $[0.2, 5.0]$.
+
+
+```{r}
+## FE
+# network_Isch_Stroke_pooled_FE = 
+#   multinma::nma(Isch_Stroke_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "fixed",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_Isch_Stroke_pooled_FE,
+#      file = here::here("output/fits/pooled_Isch_Stroke_FE.RData"))
+ 
+load(here::here("output/fits/pooled_Isch_Stroke_FE.RData"))
+
+
+
+## RE
+# network_Isch_Stroke_pooled_RE = 
+#   multinma::nma(Isch_Stroke_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "random",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 prior_het_type = "sd",
+#                 prior_het = multinma::half_normal(scale = 0.73),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_Isch_Stroke_pooled_RE,
+#      file = here::here("output/fits/pooled_Isch_Stroke_RE.RData"))
+
+load(here::here("output/fits/pooled_Isch_Stroke_RE.RData"))
+
+```
+
+Model comparison
+
+```{r}
+loo_FE = loo::loo(network_Isch_Stroke_pooled_FE)
+loo_RE = loo::loo(network_Isch_Stroke_pooled_RE)
+
+loo::loo_compare(loo_FE, loo_RE)
+```
+
+```{r}
+waic_FE = loo::waic(network_Isch_Stroke_pooled_FE)
+waic_RE = loo::waic(network_Isch_Stroke_pooled_RE)
+
+loo::loo_compare(waic_FE, waic_RE)
+```
+
+```{r}
+dic_FE = multinma::dic(network_Isch_Stroke_pooled_FE)
+dic_RE = multinma::dic(network_Isch_Stroke_pooled_RE)
+
+data.frame(model = c("FE", "RE"),
+           DIC = c(dic_FE$dic, dic_RE$dic))
+```
+
+
+```{r}
+diag_plot(model = network_Isch_Stroke_pooled_FE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+```{r}
+diag_plot(model = network_Isch_Stroke_pooled_RE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+
+
+```{r}
+plot(network_Isch_Stroke_pooled_FE, pars = "d",
+     stat = "halfeye",
+     point_interval = ggdist::median_hdi,
+     .width = 0.95,
+     ref_line = 0) + 
+  aes(fill = stat(x < 0)) +
+  scale_x_continuous(breaks = log(seq(0.2, 1.8, 0.2)),
+                     labels = seq(0.2, 1.8, 0.2),
+                     limits = log(c(0.2, 2)))
+```
+
+
+## All-cause Mortality
+
+```{r}
+# Calculate control arm's log hazard standard error for studies with more 
+# > 2 treatment arms in the "Pooled" network
+
+Any_Death_tica_pooled_se_control = 
+  d_mod |> 
+  # Only Any_Death, and remove 60 and 90mg Ticagrelor data
+  dplyr::filter(outcome == "Any_Death", 
+                treatment1 %nin% c("60_Ticagrelor", "90_Ticagrelor")) |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1,
+                num_patients_t1, num_patients_t2, SE) |> 
+  # Only keep studies with > 2 treatment arms
+  # https://stackoverflow.com/questions/32259620/how-to-remove-unique-entry-and-keep-duplicates-in-r
+  dplyr::group_by(study) |>
+  dplyr::filter( n() > 1) |> 
+  # Data wrangle to apply formulas later
+  dplyr::arrange(study, treatment1) |>
+  dplyr::mutate(k2 = dplyr::lead(treatment1),
+                num_patients_k2 = dplyr::lead(num_patients_t1),
+                se_k2 = dplyr::lead(SE)) |> 
+  dplyr::ungroup() |> 
+  dplyr::filter(!is.na(se_k2)) |> 
+  dplyr::rename("k1" = treatment1,
+                "num_patients_control" = num_patients_t2,
+                "num_patients_k1" = num_patients_t1,
+                "se_k1" = SE) |> 
+  # Apply formulas from doi:10.1186/1471-2288-10-54
+  # to calculate the control arm's log hazard SE (se_control)
+  dplyr::mutate(se_k1_k2 = se_k1_vs_k2(se_k1_vs_control = se_k1,
+                                       se_k2_vs_control = se_k2,
+                                       n_k1 = num_patients_k1, 
+                                       n_k2 = num_patients_k2,
+                                       n_control = num_patients_control
+  ),
+  se_control = se_control(se_k1_vs_control = se_k1,
+                          se_k2_vs_control = se_k2,
+                          se_k1_vs_k2 = se_k1_k2)
+  ) |> 
+  dplyr::select(study, se_control)
+```
+
+```{r}
+# Any_Death Pooled dataframe
+d_Any_Death_pooled = d_Any_Death |> subset(treatment %nin%
+                                                   c("60_Ticagrelor","90_Ticagrelor"))
+
+# Insert previously calculated control's log hazard SE in these dataframes
+
+### Pooled
+
+d_Any_Death_pooled[
+  # Filter only studies that contain >2 treatment arms
+  d_Any_Death_pooled$study %in% Any_Death_tica_pooled_se_control$study
+  # Get NA cell (which corresponds to the control arm)
+  & is.na(d_Any_Death_pooled$std.err),
+  # Select column of interest
+  "std.err"] =
+  # Insert log hazard SE
+  Any_Death_tica_pooled_se_control$se_control
+```
+
+
+### Forest
+
+```{r}
+with(d_Any_Death_pooled |> dplyr::filter(!is.na(logHR)),
+     
+     metafor::forest(x = logHR,
+                     sei = std.err,
+                     slab = paste0(study, " ", treatment),
+                     atransf = exp)
+)
+```
+
+
+
+### Analysis
+
+```{r}
+Any_Death_pooled_contrast = multinma::set_agd_contrast(d_Any_Death_pooled,
+                                                          trt_ref = "AAS",
+                                                          study = study,
+                                                          trt = treatment,
+                                                          y = logHR,
+                                                          se = std.err,
+                                                          sample_size = n_patients)
+
+Any_Death_pooled_contrast
+
+```
+
+
+```{r}
+plot(Any_Death_pooled_contrast, weight_edges = TRUE)
+```
+
+```{r}
+# Check if there are direct and indirect estimates for the same treatment
+# comparisons
+
+# tldr, there aren't! 
+
+multinma::get_nodesplits(Any_Death_pooled_contrast)
+```
+
+Weakly informative prior elicitation following Rover et al., 2021
+"Section 3.4.4 | Implications of a heterogeneity distribution"
+doi: 10.1002/jrsm.1475
+
+We want to set a 95% predictive distribution approximately between $0.2$
+  (-1.61 in the log scale) and $5.0$ (1.61 log scale) hazard ratio, because 80%
+reduction or 500% increase in  Any_Death hazard are highly implausible in 
+cardiovascular research.
+
+Marginal prior predictive distribution with $\tau \sim Half-Normal(0.73)$:
+  
+```{r}
+set.seed(123)
+N = 10e4
+
+dplyr::tibble(mu = 0,
+              tau = abs(rnorm(N, mean = mu, sd = 0.73)),
+              theta = rnorm(N, mean = mu, sd = tau)) |> 
+  ggdist::median_hdi(theta) |>  
+  dplyr::select(theta, .lower, .upper) |>  
+  dplyr::rename("Mean" = theta,
+                "2.5th" = .lower,
+                "97.5th" = .upper)
+```
+
+Thus, we propose a $Half-Normal(0.73)$: prior for log-HR based on the implied
+prediction interval for exp($\theta_i - \mu$) of $[0.2, 5.0]$.
+
+
+```{r}
+## FE
+# network_Any_Death_pooled_FE = 
+#   multinma::nma(Any_Death_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "fixed",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_Any_Death_pooled_FE,
+#      file = here::here("output/fits/pooled_Any_Death_FE.RData"))
+
+load(here::here("output/fits/pooled_Any_Death_FE.RData"))
+
+
+
+## RE
+# network_Any_Death_pooled_RE = 
+#   multinma::nma(Any_Death_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "random",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 prior_het_type = "sd",
+#                 prior_het = multinma::half_normal(scale = 0.73),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_Any_Death_pooled_RE,
+#      file = here::here("output/fits/pooled_Any_Death_RE.RData"))
+
+load(here::here("output/fits/pooled_Any_Death_RE.RData"))
+
+```
+
+Model comparison
+
+```{r}
+loo_FE = loo::loo(network_Any_Death_pooled_FE)
+loo_RE = loo::loo(network_Any_Death_pooled_RE)
+
+loo::loo_compare(loo_FE, loo_RE)
+```
+
+```{r}
+waic_FE = loo::waic(network_Any_Death_pooled_FE)
+waic_RE = loo::waic(network_Any_Death_pooled_RE)
+
+loo::loo_compare(waic_FE, waic_RE)
+```
+
+```{r}
+dic_FE = multinma::dic(network_Any_Death_pooled_FE)
+dic_RE = multinma::dic(network_Any_Death_pooled_RE)
+
+data.frame(model = c("FE", "RE"),
+           DIC = c(dic_FE$dic, dic_RE$dic))
+```
+
+
+```{r}
+diag_plot(model = network_Any_Death_pooled_FE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+```{r}
+diag_plot(model = network_Any_Death_pooled_RE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+
+
+```{r}
+plot(network_Any_Death_pooled_FE, pars = "d",
+     stat = "halfeye",
+     point_interval = ggdist::median_hdi,
+     .width = 0.95,
+     ref_line = 0) + 
+  aes(fill = stat(x < 0)) +
+  scale_x_continuous(breaks = log(seq(0.2, 3, 0.4)),
+                     labels = seq(0.2, 3.0, 0.4),
+                     limits = log(c(0.2, 3)))
+```
+
+
+## Cardiovascular Mortality
+
+```{r}
+# Calculate control arm's log hazard standard error for studies with more 
+# > 2 treatment arms in the "Pooled" network
+
+Cardio_Death_tica_pooled_se_control = 
+  d_mod |> 
+  # Only Cardio_Death, and remove 60 and 90mg Ticagrelor data
+  dplyr::filter(outcome == "Cardio_Death", 
+                treatment1 %nin% c("60_Ticagrelor", "90_Ticagrelor")) |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1,
+                num_patients_t1, num_patients_t2, SE) |> 
+  # Only keep studies with > 2 treatment arms
+  # https://stackoverflow.com/questions/32259620/how-to-remove-unique-entry-and-keep-duplicates-in-r
+  dplyr::group_by(study) |>
+  dplyr::filter( n() > 1) |> 
+  # Data wrangle to apply formulas later
+  dplyr::arrange(study, treatment1) |>
+  dplyr::mutate(k2 = dplyr::lead(treatment1),
+                num_patients_k2 = dplyr::lead(num_patients_t1),
+                se_k2 = dplyr::lead(SE)) |> 
+  dplyr::ungroup() |> 
+  dplyr::filter(!is.na(se_k2)) |> 
+  dplyr::rename("k1" = treatment1,
+                "num_patients_control" = num_patients_t2,
+                "num_patients_k1" = num_patients_t1,
+                "se_k1" = SE) |> 
+  # Apply formulas from doi:10.1186/1471-2288-10-54
+  # to calculate the control arm's log hazard SE (se_control)
+  dplyr::mutate(se_k1_k2 = se_k1_vs_k2(se_k1_vs_control = se_k1,
+                                       se_k2_vs_control = se_k2,
+                                       n_k1 = num_patients_k1, 
+                                       n_k2 = num_patients_k2,
+                                       n_control = num_patients_control
+  ),
+  se_control = se_control(se_k1_vs_control = se_k1,
+                          se_k2_vs_control = se_k2,
+                          se_k1_vs_k2 = se_k1_k2)
+  ) |> 
+  dplyr::select(study, se_control)
+```
+
+```{r}
+# Cardio_Death Pooled dataframe
+d_Cardio_Death_pooled = d_Cardio_Death |> subset(treatment %nin%
+                                                 c("60_Ticagrelor","90_Ticagrelor"))
+
+# Insert previously calculated control's log hazard SE in these dataframes
+
+### Pooled
+
+d_Cardio_Death_pooled[
+  # Filter only studies that contain >2 treatment arms
+  d_Cardio_Death_pooled$study %in% Cardio_Death_tica_pooled_se_control$study
+  # Get NA cell (which corresponds to the control arm)
+  & is.na(d_Cardio_Death_pooled$std.err),
+  # Select column of interest
+  "std.err"] =
+  # Insert log hazard SE
+  Cardio_Death_tica_pooled_se_control$se_control
+```
+
+
+### Forest
+
+```{r}
+with(d_Cardio_Death_pooled |> dplyr::filter(!is.na(logHR)),
+     
+     metafor::forest(x = logHR,
+                     sei = std.err,
+                     slab = paste0(study, " ", treatment),
+                     atransf = exp)
+)
+```
+
+
+
+### Analysis
+
+```{r}
+Cardio_Death_pooled_contrast = multinma::set_agd_contrast(d_Cardio_Death_pooled,
+                                                         trt_ref = "AAS",
+                                                         study = study,
+                                                         trt = treatment,
+                                                         y = logHR,
+                                                         se = std.err,
+                                                         sample_size = n_patients)
+
+Cardio_Death_pooled_contrast
+
+```
+
+
+```{r}
+plot(Cardio_Death_pooled_contrast, weight_edges = TRUE)
+```
+
+```{r}
+# Check if there are direct and indirect estimates for the same treatment
+# comparisons
+
+# tldr, there aren't! 
+
+multinma::get_nodesplits(Cardio_Death_pooled_contrast)
+```
+
+Weakly informative prior elicitation following Rover et al., 2021
+"Section 3.4.4 | Implications of a heterogeneity distribution"
+doi: 10.1002/jrsm.1475
+
+We want to set a 95% predictive distribution approximately between $0.2$
+  (-1.61 in the log scale) and $5.0$ (1.61 log scale) hazard ratio, because 80%
+reduction or 500% increase in  Cardio_Death hazard are highly implausible in 
+cardiovascular research.
+
+Marginal prior predictive distribution with $\tau \sim Half-Normal(0.73)$:
+  
+```{r}
+set.seed(123)
+N = 10e4
+
+dplyr::tibble(mu = 0,
+              tau = abs(rnorm(N, mean = mu, sd = 0.73)),
+              theta = rnorm(N, mean = mu, sd = tau)) |> 
+  ggdist::median_hdi(theta) |>  
+  dplyr::select(theta, .lower, .upper) |>  
+  dplyr::rename("Mean" = theta,
+                "2.5th" = .lower,
+                "97.5th" = .upper)
+```
+
+Thus, we propose a $Half-Normal(0.73)$: prior for log-HR based on the implied
+prediction interval for exp($\theta_i - \mu$) of $[0.2, 5.0]$.
+
+
+```{r}
+## FE
+# network_Cardio_Death_pooled_FE = 
+#   multinma::nma(Cardio_Death_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "fixed",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_Cardio_Death_pooled_FE,
+#      file = here::here("output/fits/pooled_Cardio_Death_FE.RData"))
+
+load(here::here("output/fits/pooled_Cardio_Death_FE.RData"))
+
+
+
+## RE
+# network_Cardio_Death_pooled_RE = 
+#   multinma::nma(Cardio_Death_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "random",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 prior_het_type = "sd",
+#                 prior_het = multinma::half_normal(scale = 0.73),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_Cardio_Death_pooled_RE,
+#      file = here::here("output/fits/pooled_Cardio_Death_RE.RData"))
+
+load(here::here("output/fits/pooled_Cardio_Death_RE.RData"))
+
+```
+
+Model comparison
+
+```{r}
+loo_FE = loo::loo(network_Cardio_Death_pooled_FE)
+loo_RE = loo::loo(network_Cardio_Death_pooled_RE)
+
+loo::loo_compare(loo_FE, loo_RE)
+```
+
+```{r}
+waic_FE = loo::waic(network_Cardio_Death_pooled_FE)
+waic_RE = loo::waic(network_Cardio_Death_pooled_RE)
+
+loo::loo_compare(waic_FE, waic_RE)
+```
+
+```{r}
+dic_FE = multinma::dic(network_Cardio_Death_pooled_FE)
+dic_RE = multinma::dic(network_Cardio_Death_pooled_RE)
+
+data.frame(model = c("FE", "RE"),
+           DIC = c(dic_FE$dic, dic_RE$dic))
+```
+
+
+```{r}
+diag_plot(model = network_Cardio_Death_pooled_FE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+```{r}
+diag_plot(model = network_Cardio_Death_pooled_RE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[Pooled_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+
+
+```{r}
+plot(network_Cardio_Death_pooled_FE, pars = "d",
+     stat = "halfeye",
+     point_interval = ggdist::median_hdi,
+     .width = 0.95,
+     ref_line = 0) + 
+  aes(fill = stat(x < 0)) +
+  scale_x_continuous(breaks = log(seq(0.2, 3, 0.4)),
+                     labels = seq(0.2, 3.0, 0.4),
+                     limits = log(c(0.2, 3)))
+```
+
+
+# Separate Doses Ticagrelor Networks
+
+## MACE
+
+```{r}
+# Calculate control arm's log hazard standard error for studies with more 
+# > 2 treatment arms in the NOT "Pooled" network
+
+MACE_not_pooled_se_control = 
+  d_mod |> 
+  # Only MACE, and remove Pooled Ticagrelor data
+  dplyr::filter(outcome == "MACE_ITT", 
+                treatment1 != "Pooled_Ticagrelor") |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1,
+                num_patients_t1, num_patients_t2, SE) |> 
+  # Only keep studies with > 2 treatment arms
+  # https://stackoverflow.com/questions/32259620/how-to-remove-unique-entry-and-keep-duplicates-in-r
+  dplyr::group_by(study) |>
+  dplyr::filter( n() > 1) |> 
+  # Data wrangle to apply formulas later
+  dplyr::arrange(study, treatment1)|>
+  dplyr::mutate(k2 = dplyr::lead(treatment1),
+                num_patients_k2 = dplyr::lead(num_patients_t1),
+                se_k2 = dplyr::lead(SE)) |> 
+  dplyr::ungroup() |> 
+  dplyr::filter(!is.na(se_k2)) |> 
+  dplyr::rename("k1" = treatment1,
+                "num_patients_control" = num_patients_t2,
+                "num_patients_k1" = num_patients_t1,
+                "se_k1" = SE) |> 
+  # Apply formulas from doi:10.1186/1471-2288-10-54
+  # to calculate the control arm's log hazard SE (se_control)
+  dplyr::mutate(se_k1_k2 = se_k1_vs_k2(se_k1_vs_control = se_k1,
+                                       se_k2_vs_control = se_k2,
+                                       n_k1 = num_patients_k1, 
+                                       n_k2 = num_patients_k2,
+                                       n_control = num_patients_control
+                                       ),
+                se_control = se_control(se_k1_vs_control = se_k1,
+                                        se_k2_vs_control = se_k2,
+                                        se_k1_vs_k2 = se_k1_k2)
+                  ) |> 
+  dplyr::select(study, se_control)
+```
+
+```{r}
+
+
+# MACE NOT Pooled dataframe
+d_MACE_not_pooled = d_MACE |> subset(treatment != "Pooled_Ticagrelor")
+
+# Insert previously calculated control's log hazard SE in these dataframes
+
+### Not pooled
+
+d_MACE_not_pooled[
+  # Filter only studies that have >2 treatment arms
+  d_MACE_not_pooled$study %in% MACE_not_pooled_se_control$study
+  # Get NA cell (which corresponds to the control arm)
+  & is.na(d_MACE_not_pooled$std.err),
+  # Select column of interest
+  "std.err"] =
+  # Insert log hazard SE
+  MACE_not_pooled_se_control$se_control
+
+
+```
+
+
+### Forest
+
+```{r}
+with(d_MACE_not_pooled |> dplyr::filter(!is.na(logHR)),
+  
+  metafor::forest(x = logHR,
+                  sei = std.err,
+                  slab = paste0(study, " ", treatment),
+                  atransf = exp)
+)
+```
+
+
+
+### Analysis
+
+```{r}
+MACE_not_pooled_contrast = multinma::set_agd_contrast(d_MACE_not_pooled,
+                                                      trt_ref = "AAS",
+                                                      study = study,
+                                                      trt = treatment,
+                                                      y = logHR,
+                                                      se = std.err,
+                                                      sample_size = n_patients)
+
+MACE_not_pooled_contrast
+
+```
+
+
+```{r}
+plot(MACE_not_pooled_contrast, weight_edges = TRUE)
+```
+
+```{r}
+# Check if there are direct and indirect estimates for the same treatment
+# comparisons
+
+# tldr, there aren't! 
+
+multinma::get_nodesplits(MACE_not_pooled_contrast)
+```
+
+Weakly informative prior elicitation following Rover et al., 2021
+"Section 3.4.4 | Implications of a heterogeneity distribution"
+doi: 10.1002/jrsm.1475
+
+We want to set a 95% predictive distribution approximately between $0.2$
+(-1.61 in the log scale) and $5.0$ (1.61 log scale) hazard ratio, because 80%
+reduction or 500% increase in  MACE hazard are highly implausible in 
+cardiovascular research.
+
+Marginal prior predictive distribution with $\tau \sim Half-Normal(0.73)$:
+
+```{r}
+set.seed(123)
+N = 10e4
+
+dplyr::tibble(mu = 0,
+              tau = abs(rnorm(N, mean = mu, sd = 0.73)),
+              theta = rnorm(N, mean = mu, sd = tau)) |> 
+  ggdist::median_hdi(theta) |>  
+  dplyr::select(theta, .lower, .upper) |>  
+  dplyr::rename("Mean" = theta,
+                "2.5th" = .lower,
+                "97.5th" = .upper)
+```
+
+Thus, we propose a $Half-Normal(0.73)$: prior for log-HR based on the implied
+prediction interval for exp($\theta_i - \mu$) of $[0.2, 5.0]$.
+
+
+```{r}
+## FE
+# network_MACE_not_pooled_FE = 
+#   multinma::nma(MACE_not_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "fixed",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_MACE_not_pooled_FE,
+#      file = here::here("output/fits/not_pooled_MACE_FE.RData"))
+
+load(here::here("output/fits/not_pooled_MACE_FE.RData"))
+
+
+
+## RE
+# network_MACE_not_pooled_RE = 
+#   multinma::nma(MACE_not_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "random",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 prior_het_type = "sd",
+#                 prior_het = multinma::half_normal(scale = 0.73),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_MACE_not_pooled_RE,
+#      file = here::here("output/fits/not_pooled_MACE_RE.RData"))
+
+load(here::here("output/fits/not_pooled_MACE_RE.RData"))
+
+```
+
+Model comparison
+
+```{r}
+loo_FE = loo::loo(network_MACE_not_pooled_FE)
+loo_RE = loo::loo(network_MACE_not_pooled_RE)
+
+loo::loo_compare(loo_FE, loo_RE)
+```
+
+```{r}
+waic_FE = loo::waic(network_MACE_not_pooled_FE)
+waic_RE = loo::waic(network_MACE_not_pooled_RE)
+
+loo::loo_compare(waic_FE, waic_RE)
+```
+
+```{r}
+dic_FE = multinma::dic(network_MACE_not_pooled_FE)
+dic_RE = multinma::dic(network_MACE_not_pooled_RE)
+
+data.frame(model = c("FE", "RE"),
+           DIC = c(dic_FE$dic, dic_RE$dic))
+```
+
+
+```{r}
+diag_plot(model = network_MACE_not_pooled_FE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[60_Ticagrelor]",
+                        "d[90_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+```{r}
+diag_plot(model = network_MACE_not_pooled_RE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[60_Ticagrelor]",
+                        "d[90_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+
+
+```{r}
+plot(network_MACE_not_pooled_FE, pars = "d",
+     stat = "halfeye",
+      point_interval = ggdist::median_hdi,
+     .width = 0.95,
+     ref_line = 0) + 
+  aes(fill = stat(x < 0)) +
+  scale_x_continuous(breaks = log(seq(0.2, 1.8, 0.2)),
+                     labels = seq(0.2, 1.8, 0.2),
+                     limits = log(c(0.4, 2)))
+```
+
+## Bleeding
+
+```{r}
+# Calculate control arm's log hazard standard error for studies with more 
+# > 2 treatment arms in the "Pooled" network
+
+safety_not_pooled_se_control = 
+  d_mod_safety |> 
+  # Only safety, and remove Pooled Ticagrelor data
+  dplyr::filter(outcome == "MACE_ITT", 
+                treatment1 != "Pooled_Ticagrelor") |> 
+  # Select relevant columns
+  dplyr::select(study, treatment1,
+                num_patients_t1, num_patients_t2, SE) |> 
+  # Only keep studies with > 2 treatment arms
+  # https://stackoverflow.com/questions/32259620/how-to-remove-unique-entry-and-keep-duplicates-in-r
+  dplyr::group_by(study) |>
+  dplyr::filter( n() > 1) |> 
+  # Data wrangle to apply formulas later
+  dplyr::arrange(study, treatment1) |>
+  dplyr::mutate(k2 = dplyr::lead(treatment1),
+                num_patients_k2 = dplyr::lead(num_patients_t1),
+                se_k2 = dplyr::lead(SE)) |> 
+  dplyr::ungroup() |> 
+  dplyr::filter(!is.na(se_k2)) |> 
+  dplyr::rename("k1" = treatment1,
+                "num_patients_control" = num_patients_t2,
+                "num_patients_k1" = num_patients_t1,
+                "se_k1" = SE) |> 
+  # Apply formulas from doi:10.1186/1471-2288-10-54
+  # to calculate the control arm's log hazard SE (se_control)
+  dplyr::mutate(se_k1_k2 = se_k1_vs_k2(se_k1_vs_control = se_k1,
+                                       se_k2_vs_control = se_k2,
+                                       n_k1 = num_patients_k1, 
+                                       n_k2 = num_patients_k2,
+                                       n_control = num_patients_control
+                                       ),
+                se_control = se_control(se_k1_vs_control = se_k1,
+                                        se_k2_vs_control = se_k2,
+                                        se_k1_vs_k2 = se_k1_k2)
+                  ) |> 
+  dplyr::select(study, se_control)
+```
+
+
+
+```{r}
+# safety Pooled dataframe
+d_safety_not_pooled = d_safety |> subset(treatment != "Pooled_Ticagrelor")
+
+# Insert previously calculated control's log hazard SE in these dataframes
+
+### Pooled
+
+d_safety_not_pooled[
+  # Filter only studies that contain >2 treatment arms
+  d_safety_not_pooled$study %in% safety_not_pooled_se_control$study
+  # Get NA cell (which corresponds to the control arm)
+  & is.na(d_safety_not_pooled$std.err),
+  # Select column of interest
+  "std.err"] =
+  # Insert log hazard SE
+  safety_not_pooled_se_control$se_control
+
+
+```
+
+### Forest
+
+```{r}
+with(d_safety_not_pooled |> dplyr::filter(!is.na(logHR)),
+  
+  metafor::forest(x = logHR,
+                  sei = std.err,
+                  slab = paste0(study, " ", treatment),
+                  atransf = exp,
+                  xlab = "Hazard Ratio")
+)
+```
+
+
+
+### Analysis
+
+```{r}
+safety_not_pooled_contrast = multinma::set_agd_contrast(d_safety_not_pooled,
+                                                        trt_ref = "AAS",
+                                                        study = study,
+                                                        trt = treatment,
+                                                        y = logHR,
+                                                        se = std.err,
+                                                        sample_size = n_patients)
+
+safety_not_pooled_contrast
+
+```
+
+
+```{r}
+plot(safety_not_pooled_contrast, weight_edges = TRUE)
+```
+
+```{r}
+# Check if there are direct and indirect estimates for the same treatment
+# comparisons
+
+# tldr, there aren't! 
+
+multinma::get_nodesplits(safety_not_pooled_contrast)
+```
+
+Weakly informative prior elicitation following Rover et al., 2021
+"Section 3.4.4 | Implications of a heterogeneity distribution"
+doi: 10.1002/jrsm.1475
+
+We want to set a 95% predictive distribution approximately between $0.2$
+(-1.61 in the log scale) and $5.0$ (1.61 log scale) hazard ratio, because 80%
+reduction or 500% increase in  MACE hazard are highly implausible in 
+cardiovascular research.
+
+Marginal prior predictive distribution with $\tau \sim Half-Normal(0.73)$:
+
+```{r}
+set.seed(123)
+N = 10e4
+
+dplyr::tibble(mu = 0,
+              tau = abs(rnorm(N, mean = mu, sd = 0.73)),
+              theta = rnorm(N, mean = mu, sd = tau)) |> 
+  ggdist::median_hdi(theta) |>  
+  dplyr::select(theta, .lower, .upper) |>  
+  dplyr::rename("Mean" = theta,
+                "2.5th" = .lower,
+                "97.5th" = .upper)
+```
+
+Thus, we propose a $Half-Normal(0.73)$: prior for log-HR based on the implied
+prediction interval for exp($\theta_i - \mu$) of $[0.2, 5.0]$.
+
+
+```{r}
+## FE
+# network_safety_not_pooled_FE = 
+#   multinma::nma(safety_not_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "fixed",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+# 
+# save(network_safety_not_pooled_FE,
+#      file = here::here("output/fits/not_pooled_safety_FE.RData"))
+ 
+load(here::here("output/fits/not_pooled_safety_FE.RData"))
+
+
+
+## RE
+# network_safety_not_pooled_RE = 
+#   multinma::nma(safety_not_pooled_contrast, 
+#                 consistency = "consistency",
+#                 likelihood = "normal",
+#                 link = "identity",
+#                 trt_effects = "random",
+#                 prior_trt = multinma::normal(scale = 1.5),
+#                 prior_het_type = "sd",
+#                 prior_het = multinma::half_normal(scale = 0.73),
+#                 
+#                 seed = 123,
+#                 adapt_delta = 0.99,
+#                 warmup = 2000,
+#                 iter = 4000,
+#                 chains = 4,
+#                 cores = parallel::detectCores())
+
+# save(network_safety_not_pooled_RE,
+#      file = here::here("output/fits/not_pooled_safety_RE.RData"))
+# 
+load(here::here("output/fits/not_pooled_safety_RE.RData"))
+
+```
+
+Model comparison
+
+```{r}
+loo_FE = loo::loo(network_safety_not_pooled_FE)
+loo_RE = loo::loo(network_safety_not_pooled_RE)
+
+loo::loo_compare(loo_FE, loo_RE)
+```
+
+```{r}
+waic_FE = loo::waic(network_safety_not_pooled_FE)
+waic_RE = loo::waic(network_safety_not_pooled_RE)
+
+loo::loo_compare(waic_FE, waic_RE)
+```
+
+```{r}
+dic_FE = multinma::dic(network_safety_not_pooled_FE)
+dic_RE = multinma::dic(network_safety_not_pooled_RE)
+
+data.frame(model = c("FE", "RE"),
+           DIC = c(dic_FE$dic, dic_RE$dic))
+```
+
+
+```{r}
+diag_plot(model = network_safety_not_pooled_FE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[60_Ticagrelor]",
+                        "d[90_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+```{r}
+diag_plot(model = network_safety_not_pooled_RE$stanfit,
+          pars_list = c("d[5_Rivaroxaban]",
+                        "d[75_Clopidogrel]",
+                        "d[AAS_2.5_Rivaroxaban]",
+                        "d[AAS_10_Prasugrel]",
+                        "d[AAS_75_Clopidogrel]",
+                        "d[60_Ticagrelor]",
+                        "d[90_Ticagrelor]"),
+          ncol_trace = 3)
+```
+
+
+
+```{r}
+plot(network_safety_not_pooled_FE, pars = "d",
+     stat = "halfeye",
+      point_interval = ggdist::median_hdi,
+     .width = 0.95,
+     ref_line = 0) + 
+  aes(fill = stat(x > 0)) +
+  scale_x_continuous(breaks = log(seq(0, 4, 0.5)),
+                     labels = seq(0, 4, 0.5),
+                     limits = log(c(0.4, 4)))
+```
+

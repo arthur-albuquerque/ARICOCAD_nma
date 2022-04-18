@@ -1,0 +1,366 @@
+---
+title: "Figures and Tables"
+author: "Arthur M. Albuquerque"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+          toc: yes
+          toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+```{r}
+# Ensures the package "groundhog" is installed
+if (!require("groundhog")) install.packages("groundhog")
+
+# Install/Load packages
+pkgs = c("rio",
+         "here",
+         "dplyr",
+         "multinma",
+         "metafor",
+         "ggdist",
+         "posterior",
+         "janitor",
+         "gt",
+         "ggplot2",
+         "patchwork")
+
+groundhog::groundhog.library(pkgs, "2022-03-14")
+
+# Load models
+
+load(here::here("output/fits/pooled_MACE_FE.RData"))
+load(here::here("output/fits/pooled_safety_FE.RData"))
+```
+
+
+# Figure 2B
+
+```{r}
+# Create function to automate data wrangling for forest plot
+
+wrangle_forest_fun = function(network_object,
+                              outcome_name){
+  
+# Extract SUCRA values
+sucra = 
+  multinma::posterior_rank_probs(network_object, 
+                                 lower_better = T,
+                                 sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::rename("name" = parameter)
+
+# Extract all posterior draws from treatment effect comparisons with AAS
+draws = multinma::relative_effects(network_object,
+                                   summary = F)
+
+# Data wrangle to facilitate manipulation of these draws
+draws_pivot = 
+  draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d["))
+
+
+# Generate 95% highest-density intervals (HDI) for each treatment effect
+CIs = 
+  draws_pivot |> 
+  dplyr::group_by(name) |> 
+  # median and 95% HDI
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::select(name:.upper) |> 
+  dplyr::mutate(interval = paste0(round(exp(value),2),
+                                  " [",
+                                  round(exp(.lower), 2),
+                                  ", ",
+                                  round(exp(.upper), 2),
+                                  "]")
+  )
+
+# Calculate posterior probabilities of interest
+probs = 
+  draws_pivot |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr08 = mean(value < log(0.8)),
+                   pr1_lower = mean(value < log(1)),
+                   pr1_greater = mean(value > log(1)),
+                   pr125 = mean(value > log(1/0.8)),
+                   prrope = mean(value > log(0.8) & value < log(1/0.8))) |> 
+  dplyr::ungroup() |> 
+  dplyr::mutate(dplyr::across(pr08:prrope, ~round(100*.,1)))
+
+
+# Put all info together and rename treatment effects
+both = 
+  dplyr::left_join(CIs, sucra) |>
+  dplyr::left_join(probs) |>
+  dplyr::mutate(
+    name = dplyr::case_when(
+      name == "d[AAS]" ~ "AAS",
+      name == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
+      name == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
+      name == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
+      name == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
+      name == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      name == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
+    
+    outcome = outcome_name
+    )
+
+return(both)
+}
+
+# Apply function for MACE and Bleeding outcomes and put all data in a single
+# data frame
+altogether = 
+  wrangle_forest_fun(network_MACE_pooled_FE,
+                   outcome_name = "MACE") |> 
+  dplyr::bind_rows(
+    wrangle_forest_fun(network_safety_pooled_FE,
+                       outcome_name = "safety")
+    ) |> 
+  # Necessary to be able to order according to SUCRA
+  dplyr::arrange(sucra, outcome)
+  
+# Function to create custom forest plot
+forest_fun = function(){
+  
+   x = 
+     base::with(altogether, # define data frame of interest
+              metafor::forest(
+                x = value,      # point estimate
+                ci.lb = .lower, # lower credible interval bound
+                ci.ub = .upper, # upper credible interval bound
+                ylim = c(-2.5, 14.5), # forest plot height
+                rows= c(-2:3, 5.5:10.5), # treatment effects order in the Y axis
+                xlim = c(-2.5, 4), # forest plot width
+                ilab = cbind(interval, pr08, pr1_lower,
+                             pr1_greater, pr125, prrope), # info on the right side
+                ilab.xpos = 1+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4), # position of these info
+                slab = name, # label on the left side
+                order = desc(outcome), # order
+                at=log(c(.4, .6, 0.8, 1, 1.25, 2, 3)), # X axis ticks
+                refline = log(c(0.8, 1, 1/0.8)), # vertical lines
+                annotate = F, # Remove default 95% CrI estimates
+                atransf = exp, # exponentiate X-axis labels (data in log scale)
+                pch = 19, # point estimate as circle
+                psize = 1.4, # Circle size
+                efac=0, # Remove vertical lines at interval bars
+                header="Compared with AAS",
+                xlab = "Hazard Ratio (log scale)",
+                cex = 1, # Text size
+                cex.lab = 1) # X axis label font size
+  ) 
+
+# ROPE gray area
+graphics::rect(xleft = log(0.8), xright = log(1/0.8),
+               ybottom = x$ylim[1] - 1, ytop = x$ylim[2] - 2,
+               border = NA, # no borders
+               col = grDevices::adjustcolor("gray70", alpha.f = 0.4))
+
+# Headers
+text(x$xlim[1], x$ylim[2] - 3,
+     "MACE",
+     pos = 4, # left-align
+     font=4, # bold
+     cex = 1.3)
+
+text(x$xlim[1], x$ylim[2] - 10.5,
+     "Bleeding",
+     pos = 4, # left-align
+     font=4, # bold
+     cex = 1.3)
+
+text((3.55 + 2.05)/2,
+     x$ylim[2], 
+     "Posterior Probability, %",
+     #font=2,
+     cex = 1)
+
+# Horizontal line
+segments(x0 = 2.05, x1 = 3.55,
+         y0 = x$ylim[2] - 0.5, y1 = x$ylim[2] - 0.5)
+
+graphics::text(1+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4),
+               x$ylim[2] - 1, cex = 1,
+               c("HR [95% CrI]", "< 0.80", "< 1.00",
+                 "> 1.00", "> 1.25", "ROPE"))
+}
+
+# Save as PDF
+
+# pdf(file = here::here("output", "plots",
+#                       'forest.pdf'),
+#     height=6, width=12)
+# 
+# forest_fun()
+# 
+# dev.off()
+
+```
+
+```{r}
+# Show previously saved forest plot
+knitr::include_graphics(here::here("output", "plots",
+                                   "forest.png"))
+
+```
+
+Treatment effects compared to AAS on MACE and Bleeding outcomes, ordered according
+to underlying SUCRA values. HR below 1.0 favors the experimental treatment.
+On the left, treatment names are depicted. In the middle,
+forest plot shows each treatment effect median and 95% credible intervals. Gray
+area corresponds to the ROPE (from 0.8 to 1.25 HR). On the right, exact effect
+sizes along with posterior probabilities are shown.
+
+Abbreviations: ROPE, region of practical equivalence; HR, hazard ratio.
+
+
+# Figure 3
+
+```{r}
+p1 = 
+  # Extract ranking probabilities for MACE
+  multinma::posterior_rank_probs(network_MACE_pooled_FE, lower_better = T) |> 
+  dplyr::as_tibble() |> 
+  dplyr::mutate(Outcome = "MACE") |> 
+  # Extract ranking probabilities for Bleeding
+  dplyr::bind_rows(
+    posterior_rank_probs(network_safety_pooled_FE, lower_better = T) |> 
+  dplyr::as_tibble() |> 
+  dplyr::mutate(Outcome = "Bleeding")
+  ) |> 
+  # Rename treatment effects and re-order
+  dplyr::mutate(
+    parameter = dplyr::case_when(
+      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
+      parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      parameter == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
+    
+    parameter = factor(parameter, levels = c("AAS + Prasugrel 10mg",
+                                     "Clopidogrel 75mg",
+                                     "AAS + Rivaroxaban 2.5mg",
+                                     "AAS + Clopidogrel 75mg",
+                                     "Pooled Ticagrelor",
+                                     "Rivaroxaban 5mg",
+                                     "AAS")),
+    Outcome = factor(Outcome, levels = c("MACE", "Bleeding"))
+    ) |> 
+  
+  # pivot_longer code below extracted from 
+  # https://github.com/dmphillippo/multinma/blob/HEAD/R/nma_summary-class.R
+  
+  tidyr::pivot_longer(cols = dplyr::starts_with("p_rank"),
+                      names_to = "rank", values_to = "probability",
+                      names_pattern = "^p_rank\\[([0-9]+)\\]$",
+                      names_transform = list(rank = as.integer)) |> 
+  dplyr::mutate(probability = 100*probability) |> 
+  
+  # Plot!
+  ggplot() + 
+  aes(x = rank, y = probability, group = Outcome, color = Outcome,
+      linetype = Outcome) +
+  geom_line(size = 0.9) +
+  scale_color_manual(values = c("forestgreen", "#802521")) +
+  scale_x_continuous(breaks = seq(1, 7, 1)) +
+  scale_y_continuous(breaks = seq(0, 100, 50),
+                     limits = c(0, 110)) +
+  labs(x = "Rank", y = "Probability (%)\n") +
+  facet_wrap(~parameter, nrow = 3) +
+  multinma::theme_multinma()
+
+```
+
+```{r}
+mace_sucra = 
+  # Extract SUCRA for MACE
+  multinma::posterior_rank_probs(network_MACE_pooled_FE, 
+                               lower_better = T,
+                               sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::mutate(outcome = "MACE")
+
+safety_sucra = 
+  # Extract SUCRA for Bleeding
+  multinma::posterior_rank_probs(network_safety_pooled_FE, 
+                               lower_better = T,
+                               sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::mutate(outcome = "Bleeding")
+
+p2 = 
+  # put both data frames together
+  dplyr::bind_rows(mace_sucra, safety_sucra) |> 
+  
+  # Rename treatment effects and re-order
+  dplyr::mutate(
+    parameter = dplyr::case_when(
+      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
+      parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      parameter == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
+    parameter = factor(parameter, levels = rev(c("AAS + Prasugrel 10mg",
+                                     "Clopidogrel 75mg",
+                                     "AAS + Rivaroxaban 2.5mg",
+                                     "AAS + Clopidogrel 75mg",
+                                     "Pooled Ticagrelor",
+                                     "Rivaroxaban 5mg",
+                                     "AAS"))),
+    outcome = factor(outcome, levels = c("MACE", "Bleeding"))
+    ) |> 
+  
+  # Plot!
+  ggplot() +
+  aes(y = parameter, x = outcome, fill = sucra, label = sucra) +
+  geom_tile() +
+  geom_text(size = 4,
+            aes(color = sucra > 0.6),
+            show.legend = F) +
+  scale_color_manual(values = c("black", "white")) +
+  scale_fill_gradientn("SUCRA",
+                       breaks=c(0, 0.50, 1),
+                       limits = c(-0.1, 1.1),
+                       colors = MetBrewer::met.brewer("OKeeffe2")) +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_y_discrete(expand = c(0,0)) +
+  labs(x = NULL, y = NULL) +
+  theme(axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank())
+```
+
+```{r, fig.width = 11}
+# Show both plots together
+p1 + p2 + patchwork::plot_annotation(tag_levels = "A") +
+  patchwork::plot_layout(widths = c(5, 1))
+```
+
+Panel A: Ranking probabilities for MACE (solid line) and Bleeding (dotted line)
+outcomes for each treatment.
+Panel B: Heatmap with corresponding SUCRA values. While each row corresponds to
+a treatment, each column depicts one outcome. 
+
+

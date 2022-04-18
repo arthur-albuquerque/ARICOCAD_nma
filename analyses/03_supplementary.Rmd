@@ -1,0 +1,3323 @@
+---
+title: "Supplementary Material"
+author: "Arthur M. Albuquerque"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+          toc: yes
+          toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE,
+	fig.align = "center"
+)
+```
+
+```{r}
+# Ensures the package "groundhog" is installed
+if (!require("groundhog")) install.packages("groundhog")
+
+# Install/Load packages
+pkgs = c("rio",
+         "here",
+         "dplyr",
+         "multinma",
+         "metafor",
+         "ggdist",
+         "posterior",
+         "janitor",
+         "ggplot2",
+         "MetBrewer",
+         "patchwork",
+         "gt")
+
+groundhog::groundhog.library(pkgs, "2022-03-14")
+
+# Load models
+load(here::here("output", "fits", "pooled_MACE_FE.RData"))
+load(here::here("output", "fits", "pooled_safety_FE.RData"))
+
+load(here::here("output", "fits", "not_pooled_MACE_FE.RData"))
+load(here::here("output", "fits", "not_pooled_safety_FE.RData"))
+
+load(here::here("output", "fits", "pooled_AMI_FE.RData"))
+load(here::here("output", "fits", "pooled_Isch_Stroke_FE.RData"))
+load(here::here("output", "fits", "pooled_Any_Death_FE.RData"))
+load(here::here("output", "fits", "pooled_Cardio_Death_FE.RData"))
+```
+
+# Pooled Ticagrelor Networks: MACE and Bleeding
+
+## League Tables
+
+### Credible Intervals
+
+```{r}
+# regex code to apply below inspired by:
+# https://twitter.com/dmphillippo/status/1510922243693551616?s=21
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", 
+          "AAS_10_Prasugrel", "AAS_75_Clopidogrel", "Pooled_Ticagrelor")
+
+# extract posterior draws of all possible treatment effect comparisons
+MACE_draws = multinma::relative_effects(network_MACE_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+safety_draws = multinma::relative_effects(network_safety_pooled_FE,
+                               summary = F,
+                               all_contrasts = T)
+
+MACE_matrix = 
+  # Data wrangle to facilitate manipulation of these draws
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  # Calculate median and 95% highest density interval (HDI)
+  ggdist::median_hdi(.width = 0.95) |> 
+  # Exponentiate because results are in the log scale 
+  dplyr::mutate(dplyr::across(value:.upper, ~round(exp(.), 2))) |> 
+  # Data wrangle 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   estci =  base::sprintf("%.2f (%.2f, %.2f)",
+                                         value, .lower, .upper)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = estci) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# similar code as above, but for the Bleeding outcome
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "AAS_10_Prasugrel" = NA,
+            "AAS_75_Clopidogrel" = NA,
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::mutate(dplyr::across(value:.upper, ~round(exp(.), 2))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   estci =  base::sprintf("%.2f (%.2f, %.2f)",
+                                         value, .lower, .upper)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = estci) |> 
+  dplyr::rename(" " = trta) |> 
+  # Transpose it so we can combine the MACE matrix with this in a league table 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 6))
+  )
+  ) |> 
+  as.matrix()
+
+# Put both matrices together now (league table)
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "95% Credible Intervals",
+  )
+```
+
+Hazard ratios (95% credible interval) for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, the corresponding
+HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
+
+### Posterior Probability (Prob) < 1
+
+```{r}
+# Similar code as code chunk above, but now for a league table showing
+# the posterior probability < 1.0 HR
+
+MACE_matrix = 
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  # Posterior Probability (%) < 1.0 HR
+  dplyr::summarise(pr = 100*mean(value < log(1))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "AAS_10_Prasugrel" = NA,
+            "AAS_75_Clopidogrel" = NA,
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+    # Posterior Probability (%) < 1.0 HR
+  dplyr::summarise(pr = 100*mean(value < log(1))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 6))
+  )
+  ) |> 
+  as.matrix()
+
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Pr(HR < 1.0)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio < 1.0 for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is below 1.0 (ie,
+there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
+
+### Prob < 0.8
+
+```{r}
+# Similar code as code chunk above, but now for a league table showing
+# the posterior probability < 0.8 HR
+
+MACE_matrix = 
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  # Posterior Probability (%) < 0.8 HR
+  dplyr::summarise(pr = 100*mean(value < log(0.8))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "AAS_10_Prasugrel" = NA,
+            "AAS_75_Clopidogrel" = NA,
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+    # Posterior Probability (%) < 1.0 HR
+  dplyr::summarise(pr = 100*mean(value < log(0.8))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 6))
+  )
+  ) |> 
+  as.matrix()
+
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Pr(HR < 0.8)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio < 0.8 for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is below 0.8 (ie,
+there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
+
+### Prob > 1.25
+
+```{r}
+# Similar code as code chunk above, but now for a league table showing
+# the posterior probability > 1.25 HR
+
+MACE_matrix = 
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  # Posterior Probability (%) > 1.25 HR
+  dplyr::summarise(pr = 100*mean(value > log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "AAS_10_Prasugrel" = NA,
+            "AAS_75_Clopidogrel" = NA,
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+    # Posterior Probability (%) > 1.25 HR
+  dplyr::summarise(pr = 100*mean(value > log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 6))
+  )
+  ) |> 
+  as.matrix()
+
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Pr(HR > 1.25)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio > 1.25 for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is above 1.25.
+
+### Prob ROPE
+
+```{r}
+# Similar code as code chunk above, but now for a league table showing
+# the posterior probability within the region of practical equivalence (ROPE),
+# i.e. between 0.8 and 1.25 HR
+
+MACE_matrix = 
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  # Posterior Probability (%) within ROPE
+  dplyr::summarise(pr = 100*mean(value > log(0.8) & value < log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "AAS_10_Prasugrel" = NA,
+            "AAS_75_Clopidogrel" = NA,
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+    # Posterior Probability (%) within ROPE
+  dplyr::summarise(pr = 100*mean(value > log(0.8) & value < log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 6))
+  )
+  ) |> 
+  as.matrix()
+
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Pr(ROPE)",
+  )
+```
+
+
+Posterior probabilities (%) of hazard ratio within the region of practical equivalence
+(ROPE), ie, between 0.80 and 1.25, for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is within the ROPE.
+
+
+## Ranks
+
+```{r}
+
+# Regex code to apply below
+rxp = "^rank\\[(.+)]$" 
+
+# Generate posterior draws of treatment effect ranks
+ranks_MACE = 
+  multinma::posterior_ranks(network_MACE_pooled_FE, lower_better = T,
+                          summary = F)
+
+ranks_safety = 
+  multinma::posterior_ranks(network_safety_pooled_FE, lower_better = T,
+                          summary = F)
+
+# Data wrangle to combine both MACE and Bleeding draws
+ranks_MACE$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(dplyr::starts_with("rank[")) |> 
+  dplyr::mutate(name = base::gsub(rxp, "\\1", name)) |> 
+  dplyr::mutate(outcome = "MACE") |> 
+  dplyr::bind_rows(
+    ranks_safety$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(dplyr::starts_with("rank[")) |> 
+  dplyr::mutate(name = base::gsub(rxp, "\\1", name)) |> 
+  dplyr::mutate(outcome = "Bleeding")
+  ) |> 
+  # Rename and re-order treatment effect
+  dplyr::mutate(name = dplyr::case_when(
+      name == "AAS" ~ "AAS",
+      name == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
+      name == "75_Clopidogrel" ~ "Clopidogrel 75mg",
+      name == "AAS_2.5_Rivaroxaban" ~ "AAS + Rivaroxaban 2.5mg",
+      name == "AAS_10_Prasugrel" ~ "AAS + Prasugrel 10mg",
+      name == "AAS_75_Clopidogrel" ~ "AAS + Clopidogrel 75mg",
+      name == "Pooled_Ticagrelor" ~ "Pooled Ticagrelor"),
+      
+      name = factor(name, levels = rev(c("AAS + Prasugrel 10mg",
+                                     "Clopidogrel 75mg",
+                                     "AAS + Rivaroxaban 2.5mg",
+                                     "AAS + Clopidogrel 75mg",
+                                     "Pooled Ticagrelor",
+                                     "Rivaroxaban 5mg",
+                                     "AAS"))),
+    outcome = factor(outcome, levels = c("MACE",
+                                         "Bleeding"))) |> 
+  
+  # Plot!
+  
+  ggplot() +
+  aes(x = value, y = name, fill = name) +
+  ggdist::stat_cdfinterval(.width = 0.95,
+                       point_interval = ggdist::median_qi) +
+  scale_fill_manual(values= MetBrewer::met.brewer("Greek", 7)) +
+  scale_x_continuous(breaks = seq(1, 7, 1)) +
+  labs(x = "Rank", y = NULL) +
+  facet_wrap(~outcome, scales = "free_x") +
+  multinma::theme_multinma() +
+  theme(legend.position = "none")
+
+
+```
+
+Marginal posterior distributions for the rank of each treatment. Left panel depicts
+ranks for MACE, while right panel for the Bleeding outcome. In each panel,
+there are a point estimate, interval bar, and bar plot for each treatment (Y-axis).
+The point estimate represents the median rank. The interval bar shows the 95%
+credible (quantile) interval of the underlying marginal posterior distribution.
+Lastly, the bar plot shows the cumulative distribution function (CDF).  
+
+# Separate Doses Ticagrelor Networks: MACE and Bleeding
+
+```{r}
+# From now on, all code has been previously commented/explained either in this
+# file or other files. Thus, I won't comment each step again
+```
+
+## Network (pending)
+
+placeholder
+
+## Forest
+
+
+```{r}
+
+wrangle_forest_fun = function(network_object,
+                              outcome_name){
+  
+sucra = 
+  multinma::posterior_rank_probs(network_object, 
+                                 lower_better = T,
+                                 sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::rename("name" = parameter)
+
+draws = multinma::relative_effects(network_object,
+                                   summary = F)
+
+draws_pivot = 
+  draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d["))
+
+CIs = 
+  draws_pivot |> 
+  dplyr::group_by(name) |> 
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::select(name:.upper) |> 
+  dplyr::mutate(interval = paste0(round(exp(value),2),
+                                  " [",
+                                  round(exp(.lower), 2),
+                                  ", ",
+                                  round(exp(.upper), 2),
+                                  "]")
+  )
+
+probs = 
+  draws_pivot |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr08 = mean(value < log(0.8)),
+                   pr1_lower = mean(value < log(1)),
+                   pr1_greater = mean(value > log(1)),
+                   pr125 = mean(value > log(1/0.8)),
+                   prrope = mean(value > log(0.8) & value < log(1/0.8))) |> 
+  dplyr::ungroup() |> 
+  dplyr::mutate(dplyr::across(pr08:prrope, ~round(100*.,1)))
+
+
+both = 
+  dplyr::left_join(CIs, sucra) |>
+  dplyr::left_join(probs) |>
+  dplyr::mutate(
+    name = dplyr::case_when(
+      name == "d[AAS]" ~ "AAS",
+      name == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
+      name == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
+      name == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
+      name == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
+      name == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      name == "d[60_Ticagrelor]" ~ "Ticagrelor 60mg",
+    name == "d[90_Ticagrelor]" ~ "Ticagrelor 90mg"),
+    
+    outcome = outcome_name
+    )
+
+return(both)
+}
+
+altogether = 
+  wrangle_forest_fun(network_MACE_not_pooled_FE,
+                   outcome_name = "MACE") |> 
+  dplyr::bind_rows(
+    wrangle_forest_fun(network_safety_not_pooled_FE,
+                       outcome_name = "safety")
+    ) |> 
+  dplyr::arrange(sucra, outcome)
+  
+forest_fun = function(){
+  
+   x = 
+     base::with(altogether,
+              metafor::forest(x = value,
+                    ci.lb = .lower,
+                    ci.ub = .upper,
+                    ylim = c(-2.5, 16.5),
+                    rows= c(-2:4, 6.5:12.5),
+                    xlim = c(-2.5, 4.5),
+                    ilab = cbind(interval, pr08, pr1_lower,
+                                 pr1_greater, pr125, prrope),
+                    ilab.xpos = 1.5+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4),
+                    slab = name,
+                    order = desc(outcome),
+                    at=log(c(.4, .6, 0.8, 1, 1.25, 2, 4)),
+                    refline = log(c(0.8, 1, 1/0.8)), # vertical lines
+                    pch = 19, # circles
+                    annotate = F, # Remove estimates
+                    atransf = exp,
+                    psize = 1.4, # Circle size
+                    efac=0, # Remove vertical lines at interval bars
+                    header="Compared with AAS",
+                    xlab = "Hazard Ratio (log scale)",
+                    cex = 1,
+                    cex.lab = 1) # X axis label font size
+  ) 
+
+# ROPE
+graphics::rect(xleft = log(0.8), xright = log(1/0.8),
+               ybottom = x$ylim[1] - 1, ytop = x$ylim[2] - 2,
+               border = NA, # no borders
+               col = grDevices::adjustcolor("gray70", alpha.f = 0.4))
+
+# Headers
+
+text(x$xlim[1], x$ylim[2] - 3,
+     "MACE",
+     font=4, # bold
+     pos = 4, # left-align
+     cex = 1.3)
+
+text(x$xlim[1], x$ylim[2] - 11.5,
+     "Bleeding",
+     font=4, # bold
+     pos = 4, # left-align
+     cex = 1.3)
+
+text((4.05 + 2.55)/2,
+     x$ylim[2], 
+     "Posterior Probability, %",
+     #font=2,
+     cex = 1)
+
+# Horizontal line
+segments(x0 = 2.55, x1 = 4.05,
+         y0 = x$ylim[2] - 0.5, y1 = x$ylim[2] - 0.5)
+
+graphics::text(1.5+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4),
+               x$ylim[2] - 1, cex = 1,
+               c("HR [95% CrI]", "< 0.80", "< 1.00",
+                 "> 1.00", "> 1.25", "ROPE"))
+}
+
+# pdf(file = here::here("output", "plots", "supplementary",
+#                       'forest_not_pooled_primary.pdf'),
+#     height=7, width=13)
+# 
+# forest_fun()
+# 
+# dev.off()
+```
+
+```{r}
+# Show previously saved forest plot
+knitr::include_graphics(here::here("output", "plots", "supplementary",  
+                                   'forest_not_pooled_primary.png'))
+
+```
+
+Treatment effects compared to AAS on MACE and Bleeding outcomes, ordered according
+to underlying SUCRA values. HR below 1.0 favors the experimental treatment.
+On the left, treatment names are depicted. In the middle,
+forest plot shows each treatment effect median and 95% credible intervals. Gray
+area corresponds to the ROPE (from 0.8 to 1.25 HR). On the right, exact effect
+sizes along with posterior probabilities are shown.
+
+Abbreviations: ROPE, region of practical equivalence; HR, hazard ratio.
+
+## League tables
+
+### Credible Intervals
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "60_Ticagrelor",
+          "75_Clopidogrel", "90_Ticagrelor", "AAS_2.5_Rivaroxaban", 
+          "AAS_10_Prasugrel", "AAS_75_Clopidogrel")
+
+MACE_draws = multinma::relative_effects(network_MACE_not_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+safety_draws = multinma::relative_effects(network_safety_not_pooled_FE,
+                               summary = F,
+                               all_contrasts = T)
+
+MACE_matrix = 
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::mutate(dplyr::across(value:.upper, ~round(exp(.), 2))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   estci =  base::sprintf("%.2f (%.2f, %.2f)",
+                                         value, .lower, .upper)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = estci) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 7))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "90_Ticagrelor" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA)
+  ) |> 
+  as.matrix()
+
+
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "90_Ticagrelor" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+             "AAS_10_Prasugrel" = NA,
+             "AAS_75_Clopidogrel" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel,
+                "90_Ticagrelor" = X90_Ticagrelor) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::mutate(dplyr::across(value:.upper, ~round(exp(.), 2))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   estci =  base::sprintf("%.2f (%.2f, %.2f)",
+                                         value, .lower, .upper)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = estci) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("AAS_75_Clopidogrel" = rep(NA, 7))
+  )
+  ) |> 
+   # re-arrange column order
+  dplyr::select(order) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 8, ncol = 8)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
+            "AAS + Clopidogrel 75mg")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "95% Credible Intervals",
+  )
+```
+
+Hazard ratios (95% credible interval) for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, the corresponding
+HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
+
+
+### Prob < 1
+
+```{r}
+MACE_matrix = 
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(1))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 7))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "90_Ticagrelor" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA)
+  ) |> 
+  as.matrix()
+
+
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "90_Ticagrelor" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+             "AAS_10_Prasugrel" = NA,
+             "AAS_75_Clopidogrel" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel,
+                "90_Ticagrelor" = X90_Ticagrelor) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(1))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |>  
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("AAS_75_Clopidogrel" = rep(NA, 7))
+  )
+  ) |> 
+   # re-arrange column order
+  dplyr::select(order) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 8, ncol = 8)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
+            "AAS + Clopidogrel 75mg")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Pr(HR < 1.0)",
+  )
+
+
+```
+
+Hazard ratios (95% credible interval) for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, the corresponding
+HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
+
+### Prob < 0.8
+
+```{r}
+MACE_matrix = 
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(0.8))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 7))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "90_Ticagrelor" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA)
+  ) |> 
+  as.matrix()
+
+
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "90_Ticagrelor" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+             "AAS_10_Prasugrel" = NA,
+             "AAS_75_Clopidogrel" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel,
+                "90_Ticagrelor" = X90_Ticagrelor) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(0.8))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |>  
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("AAS_75_Clopidogrel" = rep(NA, 7))
+  )
+  ) |> 
+   # re-arrange column order
+  dplyr::select(order) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 8, ncol = 8)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
+            "AAS + Clopidogrel 75mg")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Pr(HR < 0.8)",
+  )
+
+
+```
+
+Posterior probabilities (%) of hazard ratio < 0.8 for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is below 0.8 (ie,
+there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
+
+### Prob > 1.25
+
+```{r}
+MACE_matrix = 
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 7))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "90_Ticagrelor" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA)
+  ) |> 
+  as.matrix()
+
+
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "90_Ticagrelor" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+             "AAS_10_Prasugrel" = NA,
+             "AAS_75_Clopidogrel" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel,
+                "90_Ticagrelor" = X90_Ticagrelor) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |>  
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("AAS_75_Clopidogrel" = rep(NA, 7))
+  )
+  ) |> 
+   # re-arrange column order
+  dplyr::select(order) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 8, ncol = 8)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
+            "AAS + Clopidogrel 75mg")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Pr(HR > 1.25)",
+  )
+
+
+```
+
+Posterior probabilities (%) of hazard ratio < 0.8 for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is below 0.8 (ie,
+there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
+
+### Prob ROPE
+
+```{r}
+MACE_matrix = 
+  MACE_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(0.8) & value < log(1.25))) |>
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 7))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "90_Ticagrelor" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA)
+  ) |> 
+  as.matrix()
+
+
+safety_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "90_Ticagrelor" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+             "AAS_10_Prasugrel" = NA,
+             "AAS_75_Clopidogrel" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel,
+                "90_Ticagrelor" = X90_Ticagrelor) |> 
+  dplyr::bind_rows(
+    
+  safety_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(0.8) & value < log(1.25))) |>
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |>  
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("AAS_75_Clopidogrel" = rep(NA, 7))
+  )
+  ) |> 
+   # re-arrange column order
+  dplyr::select(order) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 8, ncol = 8)
+new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
+new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
+            "AAS + Clopidogrel 75mg")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Pr(ROPE)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio within the region of practical equivalence
+(ROPE), ie, between 0.80 and 1.25, for the MACE or Bleeding outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the MACE outcome. Results to the left
+(left lower half table) correspond to the Bleeding outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is within the ROPE.
+
+## Ranks + SUCRA
+
+```{r}
+p1 = 
+  multinma::posterior_rank_probs(network_MACE_not_pooled_FE, lower_better = T) |> 
+  dplyr::as_tibble() |> 
+  dplyr::mutate(Outcome = "MACE") |> 
+  dplyr::bind_rows(
+    posterior_rank_probs(network_safety_not_pooled_FE, lower_better = T) |> 
+  dplyr::as_tibble() |> 
+  dplyr::mutate(Outcome = "Bleeding")
+  ) |> 
+  dplyr::mutate(
+    parameter = dplyr::case_when(
+      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
+      parameter == "d[60_Ticagrelor]" ~ "Ticagrelor 60mg",
+      parameter == "d[90_Ticagrelor]" ~ "Ticagrelor 90mg",
+      parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg"),
+    
+    parameter = factor(parameter, levels = c("AAS + Prasugrel 10mg",
+                                     "Clopidogrel 75mg",
+                                     "AAS + Rivaroxaban 2.5mg",
+                                     "AAS + Clopidogrel 75mg",
+                                     "Ticagrelor 60mg",
+                                     "Ticagrelor 90mg",
+                                     "Rivaroxaban 5mg",
+                                     "AAS")),
+    
+    Outcome = factor(Outcome, levels = c("MACE", "Bleeding"))
+    ) |> 
+  # pivot_longer code below extracted from 
+  # https://github.com/dmphillippo/multinma/blob/HEAD/R/nma_summary-class.R
+  
+  tidyr::pivot_longer(cols = dplyr::starts_with("p_rank"),
+                      names_to = "rank", values_to = "probability",
+                      names_pattern = "^p_rank\\[([0-9]+)\\]$",
+                      names_transform = list(rank = as.integer)) |> 
+  dplyr::mutate(probability = 100*probability) |> 
+  ggplot() + 
+  aes(x = rank, y = probability, group = Outcome, color = Outcome,
+      linetype = Outcome) +
+  geom_line(size = 0.9) +
+  scale_color_manual(values = c("forestgreen", "#802521")) +
+  scale_x_continuous(breaks = seq(1, 7, 1)) +
+  scale_y_continuous(breaks = seq(0, 100, 50),
+                     limits = c(0, 110)) +
+  labs(x = "Rank", y = "Probability (%)\n") +
+  facet_wrap(~parameter, nrow = 3) +
+  multinma::theme_multinma()
+
+```
+
+```{r}
+mace_sucra = 
+  multinma::posterior_rank_probs(network_MACE_not_pooled_FE, 
+                               lower_better = T,
+                               sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::mutate(outcome = "MACE")
+
+safety_sucra = 
+  multinma::posterior_rank_probs(network_safety_not_pooled_FE, 
+                               lower_better = T,
+                               sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::mutate(outcome = "Bleeding")
+
+p2 = 
+  dplyr::bind_rows(mace_sucra, safety_sucra) |> 
+  dplyr::mutate(
+    parameter = dplyr::case_when(
+      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
+      parameter == "d[60_Ticagrelor]" ~ "Ticagrelor 60mg",
+      parameter == "d[90_Ticagrelor]" ~ "Ticagrelor 90mg",
+      parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg"),
+    
+    parameter = factor(parameter, levels = rev(c("AAS + Prasugrel 10mg",
+                                     "Clopidogrel 75mg",
+                                     "AAS + Rivaroxaban 2.5mg",
+                                     "AAS + Clopidogrel 75mg",
+                                     "Ticagrelor 60mg",
+                                     "Ticagrelor 90mg",
+                                     "Rivaroxaban 5mg",
+                                     "AAS"))),
+    outcome = factor(outcome, levels = c("MACE", "Bleeding"))
+    ) |> 
+  ggplot() +
+  aes(y = parameter, x = outcome, fill = sucra, label = sucra) +
+  geom_tile() +
+  geom_text(size = 4,
+            aes(color = sucra > 0.6),
+            show.legend = F) +
+  scale_color_manual(values = c("black", "white")) +
+  scale_fill_gradientn("SUCRA",
+                       breaks=c(0, 0.50, 1),
+                       limits = c(-0.1, 1.1),
+                       colors = MetBrewer::met.brewer("OKeeffe2")) +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_y_discrete(expand = c(0,0)) +
+  labs(x = NULL, y = NULL) +
+  theme(axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank())
+```
+
+```{r, fig.width = 11}
+# Show both plots together
+p1 + p2 + patchwork::plot_annotation(tag_levels = "A") +
+  patchwork::plot_layout(widths = c(5, 1))
+```
+
+Panel A: Ranking probabilities for MACE (solid line) and Bleeding (dotted line)
+outcomes for each treatment.
+Panel B: Heatmap with corresponding SUCRA values. While each row corresponds to
+a treatment, each column depicts one outcome. 
+
+## Ranks
+
+```{r}
+rxp = "^rank\\[(.+)]$" 
+
+ranks_MACE = 
+  multinma::posterior_ranks(network_MACE_not_pooled_FE, lower_better = T,
+                          summary = F)
+
+ranks_safety = 
+  multinma::posterior_ranks(network_safety_not_pooled_FE, lower_better = T,
+                          summary = F)
+
+ranks_MACE$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(dplyr::starts_with("rank[")) |> 
+  dplyr::mutate(name = base::gsub(rxp, "\\1", name)) |> 
+  dplyr::mutate(outcome = "MACE") |> 
+  dplyr::bind_rows(
+    ranks_safety$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(dplyr::starts_with("rank[")) |> 
+  dplyr::mutate(name = base::gsub(rxp, "\\1", name)) |> 
+  dplyr::mutate(outcome = "Bleeding")
+  ) |> 
+  dplyr::mutate(
+    name = dplyr::case_when(
+      name == "AAS" ~ "AAS",
+      name == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
+      name == "60_Ticagrelor" ~ "Ticagrelor 60mg",
+      name == "90_Ticagrelor" ~ "Ticagrelor 90mg",
+      name == "75_Clopidogrel" ~ "Clopidogrel 75mg",
+      name == "AAS_2.5_Rivaroxaban" ~ "AAS + Rivaroxaban 2.5mg",
+      name == "AAS_10_Prasugrel" ~ "AAS + Prasugrel 10mg",
+      name == "AAS_75_Clopidogrel" ~ "AAS + Clopidogrel 75mg"),
+    
+    name = factor(name, levels = rev(c("AAS + Prasugrel 10mg",
+                                     "Clopidogrel 75mg",
+                                     "AAS + Rivaroxaban 2.5mg",
+                                     "AAS + Clopidogrel 75mg",
+                                     "Ticagrelor 60mg",
+                                     "Ticagrelor 90mg",
+                                     "Rivaroxaban 5mg",
+                                     "AAS"))),
+    outcome = factor(outcome, levels = c("MACE",
+                                         "Bleeding"))) |> 
+  
+  ggplot() +
+  aes(x = value, y = name, fill = name) +
+  ggdist::stat_cdfinterval(.width = 0.95,
+                       point_interval = ggdist::median_qi) +
+  scale_fill_manual(values= MetBrewer::met.brewer("Greek", 8)) +
+  scale_x_continuous(breaks = seq(1, 8, 1)) +
+  labs(x = "Rank", y = NULL) +
+  facet_wrap(~outcome, scales = "free_x") +
+  multinma::theme_multinma() +
+  theme(legend.position = "none")
+
+
+```
+
+Marginal posterior distributions for the rank of each treatment. Left panel depicts
+ranks for MACE, while right panel for the Bleeding outcome. In each panel,
+there are a point estimate, interval bar, and bar plot for each treatment (Y-axis).
+The point estimate represents the median rank. The interval bar shows the 95% 
+credible interval of the underlying marginal posterior distribution. Lastly,
+the bar plot shows the cumulative distribution function (CDF).  
+
+
+# Pooled Ticagrelor Networks: Secondary outcomes
+
+## Networks (pending)
+
+placeholder
+
+## Forest
+
+
+```{r}
+wrangle_forest_fun = function(network_object,
+                              outcome_name){
+  
+sucra = 
+  multinma::posterior_rank_probs(network_object, 
+                                 lower_better = T,
+                                 sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::rename("name" = parameter)
+
+draws = multinma::relative_effects(network_object,
+                                   summary = F)
+
+draws_pivot = 
+  draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d["))
+
+CIs = 
+  draws_pivot |> 
+  dplyr::group_by(name) |> 
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::select(name:.upper) |> 
+  dplyr::mutate(interval = paste0(round(exp(value),2),
+                                  " [",
+                                  round(exp(.lower), 2),
+                                  ", ",
+                                  round(exp(.upper), 2),
+                                  "]")
+  )
+
+probs = 
+  draws_pivot |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr08 = mean(value < log(0.8)),
+                   pr1_lower = mean(value < log(1)),
+                   pr1_greater = mean(value > log(1)),
+                   pr125 = mean(value > log(1/0.8)),
+                   prrope = mean(value > log(0.8) & value < log(1/0.8))) |> 
+  dplyr::ungroup() |> 
+  dplyr::mutate(dplyr::across(pr08:prrope, ~round(100*.,1)))
+
+
+both = 
+  dplyr::left_join(CIs, sucra) |>
+  dplyr::left_join(probs) |>
+  dplyr::mutate(
+    name = dplyr::case_when(
+      name == "d[AAS]" ~ "AAS",
+      name == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
+      name == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
+      name == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
+      name == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
+      name == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      name == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
+    
+    outcome = outcome_name
+    )
+
+return(both)
+}
+
+altogether = 
+  wrangle_forest_fun(network_AMI_pooled_FE,
+                   outcome_name = "AMI") |> 
+  dplyr::bind_rows(
+    wrangle_forest_fun(network_Isch_Stroke_pooled_FE,
+                       outcome_name = "Stroke"),
+    wrangle_forest_fun(network_Any_Death_pooled_FE,
+                       outcome_name = "Any Death"),
+     wrangle_forest_fun(network_Cardio_Death_pooled_FE,
+                       outcome_name = "Cardiovascular Death")
+    ) |> 
+  dplyr::mutate(
+    outcome = factor(outcome, levels = rev(c("AMI",
+                                         "Stroke",
+                                         "Any Death",
+                                         "Cardiovascular Death")))
+  ) |> 
+  dplyr::arrange(sucra)
+  
+forest_fun = function(){
+  
+   x = 
+     base::with(altogether,
+              metafor::forest(
+                x = value,
+                ci.lb = .lower,
+                ci.ub = .upper,
+                ylim = c(-2, 26),
+                rows= c(-2:1, 4:7, 10:13, 16:21),
+                xlim = c(-3, 4),
+                ilab = cbind(interval, pr08, pr1_lower,
+                             pr1_greater, pr125, prrope),
+                ilab.xpos = 1+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4),
+                slab = name,
+                order = outcome,
+                at=log(c(.2, .4, .6, 0.8, 1, 1.25, 2, 3)),
+                refline = log(c(0.8, 1, 1/0.8)), # vertical lines
+                pch = 19, # circles
+                annotate = F, # Remove estimates
+                atransf = exp,
+                psize = 1.4, # Circle size
+                efac=0, # Remove vertical lines at interval bars
+                header="Compared with AAS",
+                xlab = "Hazard Ratio (log scale)",
+                cex = 1,
+                cex.lab = 1) # X axis label font size
+  ) 
+
+# ROPE
+graphics::rect(xleft = log(0.8), xright = log(1/0.8),
+               ybottom = x$ylim[1] - 2, ytop = x$ylim[2] - 2,
+               border = NA, # no borders
+               col = grDevices::adjustcolor("gray70", alpha.f = 0.4))
+
+# Headers
+
+text(x$xlim[1], x$ylim[2] - 3.5,
+     "AMI",
+     pos = 4, # left-align
+     font= 4, # bold
+     cex = 1.3)
+
+text(x$xlim[1], x$ylim[2] - 11.5,
+     pos = 4, # left-align
+     "Stroke",
+     font=4, # bold
+     cex = 1.3)
+
+text(x$xlim[1], x$ylim[2] - 17.5,
+     "All-cause Mortality",
+     pos = 4, # left-align
+     font=4, # bold
+     cex = 1.3)
+
+text(x$xlim[1], x$ylim[2] - 23.5,
+     "Cardiovascular Mortality",
+     pos = 4, # left-align
+     font=4, # bold
+     cex = 1.3)
+
+text((3.55 + 2.05)/2,
+     x$ylim[2], 
+     "Posterior Probability, %",
+     #font=2,
+     cex = 1)
+
+# Horizontal line
+segments(x0 = 2.05, x1 = 3.55,
+         y0 = x$ylim[2] - 0.5, y1 = x$ylim[2] - 0.5)
+
+graphics::text(1+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4),
+               x$ylim[2] - 1, cex = 1,
+               c("HR [95% CrI]", "< 0.80", "< 1.00",
+                 "> 1.00", "> 1.25", "ROPE"))
+}
+
+# pdf(file = here::here("output", "plots", "supplementary",
+#                       'forest_secondary_outcomes.pdf'),
+#     height=11, width=12)
+# 
+# forest_fun()
+# 
+# dev.off()
+```
+
+```{r}
+# Show previously saved forest plot
+knitr::include_graphics(here::here("output", "plots", "supplementary",
+                                   "forest_secondary_outcomes.png"))
+
+```
+
+Treatment effects compared to AAS on MACE and Bleeding outcomes, ordered according
+to underlying SUCRA values. HR below 1.0 favors the experimental treatment.
+On the left, treatment names are depicted. In the middle,
+forest plot shows each treatment effect median and 95% credible intervals. Gray
+area corresponds to the ROPE (from 0.8 to 1.25 HR). On the right, exact effect
+sizes along with posterior probabilities are shown.
+
+Abbreviations: ROPE, region of practical equivalence; HR, hazard ratio.
+
+## League Tables
+
+### Credible Intervals
+
+```{r fig.height=5}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", 
+          "AAS_10_Prasugrel", "AAS_75_Clopidogrel", "Pooled_Ticagrelor")
+
+AMI_draws = multinma::relative_effects(network_AMI_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+AMI_matrix = 
+  AMI_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::mutate(dplyr::across(value:.upper, ~round(exp(.), 2))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   estci =  base::sprintf("%.2f (%.2f, %.2f)",
+                                         value, .lower, .upper)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = estci) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Acute Myocardial Infarction: 95% Credible Interval",
+  )
+```
+
+Hazard ratios (95% credible interval) for the Acute Myocardial Infarction outcome.
+Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+A hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, the corresponding
+HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
+
+
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+stroke_draws = multinma::relative_effects(network_Isch_Stroke_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+stroke_matrix = 
+  stroke_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::mutate(dplyr::across(value:.upper, ~round(exp(.), 2))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   estci =  base::sprintf("%.2f (%.2f, %.2f)",
+                                         value, .lower, .upper)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = estci) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Ischemic Stroke: 95% Credible Interval",
+  )
+```
+
+Hazard ratios (95% credible interval) for the Ischemic Stroke outcome.
+Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+A hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, the corresponding
+HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+any_draws = multinma::relative_effects(network_Any_Death_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+cardio_draws = multinma::relative_effects(network_Cardio_Death_pooled_FE,
+                               summary = F,
+                               all_contrasts = T)
+
+any_matrix = 
+  any_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::mutate(dplyr::across(value:.upper, ~round(exp(.), 2))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   estci =  base::sprintf("%.2f (%.2f, %.2f)",
+                                         value, .lower, .upper)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = estci) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+
+cardio_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  cardio_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  ggdist::median_hdi(.width = 0.95) |> 
+  dplyr::mutate(dplyr::across(value:.upper, ~round(exp(.), 2))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   estci =  base::sprintf("%.2f (%.2f, %.2f)",
+                                         value, .lower, .upper)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = estci) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 4))
+  )
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
+new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt()  |> 
+  gt::tab_header(
+    title = "All-cause and Cardiovascular Mortality: 95% Credible Interval",
+  )
+```
+
+Hazard ratios (95% credible interval) for the All-cause or Cardiovascular
+mortality outcomes. Treatments are shown in the diagonal. Results to the right
+of this diagonal (right upper half table) correspond to the All-cause mortality
+outcome. Results to the left (left lower half table) correspond to the
+Cardiovascular mortality outcome. Comparisons between treatments should be read
+from left to right and the estimate is in the cell in common between the
+column-defining treatment and the row-defining treatment. For both outcomes, a
+hazard ratio < 1.0 favors the column-defining treatment. For example, in the
+Rivaroxaban 5mg vs. AAS comparison for All-cause mortality, the corresponding
+HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
+
+
+### Prob < 1
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", 
+          "AAS_10_Prasugrel", "AAS_75_Clopidogrel", "Pooled_Ticagrelor")
+
+AMI_draws = multinma::relative_effects(network_AMI_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+AMI_matrix = 
+  AMI_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(1))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |>  
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Acute Myocardial Infarction: Pr(HR < 1.0)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio < 1.0 for the Acute Myocardial
+Infarction outcome. Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+A hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is below 1.0 (ie,
+there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
+
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+stroke_draws = multinma::relative_effects(network_Isch_Stroke_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+stroke_matrix = 
+  stroke_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(1))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Ischemic Stroke: Pr(HR < 1.0)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio < 1.0 for the Ischemic Stroke outcome.
+Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+A hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is below 1.0 (ie,
+there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
+
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+any_draws = multinma::relative_effects(network_Any_Death_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+cardio_draws = multinma::relative_effects(network_Cardio_Death_pooled_FE,
+                               summary = F,
+                               all_contrasts = T)
+
+any_matrix = 
+  any_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(1))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+
+cardio_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  cardio_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(1))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 4))
+  )
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
+new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt()  |> 
+  gt::tab_header(
+    title = "All-cause and Cardiovascular Mortality: Pr(HR < 1.0)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio < 1.0 for the All-cause or
+Cardiovascular mortality outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the All-cause mortality outcome. Results to the left
+(left lower half table) correspond to the Cardiovascular mortality outcome.
+Comparisons between treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for All-cause mortality,
+there was a posterior probability of `r new[1,2]`% that the hazard ratio is below
+1.0 (ie, there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
+
+### Prob < 0.8
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", 
+          "AAS_10_Prasugrel", "AAS_75_Clopidogrel", "Pooled_Ticagrelor")
+
+AMI_draws = multinma::relative_effects(network_AMI_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+AMI_matrix = 
+  AMI_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(0.8))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |>  
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Acute Myocardial Infarction: Pr(HR < 0.8)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio < 0.80 for the Acute Myocardial
+Infarction outcome. Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+A hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is below 0.80.
+
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+stroke_draws = multinma::relative_effects(network_Isch_Stroke_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+stroke_matrix = 
+  stroke_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(0.8))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Ischemic Stroke: Pr(HR < 0.8)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio < 0.80 for the Ischemic Stroke outcome.
+Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+A hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is below 0.80.
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+any_draws = multinma::relative_effects(network_Any_Death_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+cardio_draws = multinma::relative_effects(network_Cardio_Death_pooled_FE,
+                               summary = F,
+                               all_contrasts = T)
+
+any_matrix = 
+  any_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(0.8))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+
+cardio_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  cardio_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(0.8))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 4))
+  )
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
+new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt()  |> 
+  gt::tab_header(
+    title = "All-cause and Cardiovascular Mortality: Pr(HR < 0.8)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio < 0.80 for the All-cause or
+Cardiovascular mortality outcomes.
+Treatments are shown in the diagonal. Results to the right of this diagonal
+(right upper half table) correspond to the All-cause mortality outcome. Results to the left
+(left lower half table) correspond to the Cardiovascular mortality outcome.
+Comparisons between treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for All-cause mortality,
+there was a posterior probability of `r new[1,2]`% that the hazard ratio is below
+0.80.
+
+### Prob > 1.25
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", 
+          "AAS_10_Prasugrel", "AAS_75_Clopidogrel", "Pooled_Ticagrelor")
+
+AMI_draws = multinma::relative_effects(network_AMI_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+AMI_matrix = 
+  AMI_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |>  
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Acute Myocardial Infarction: Pr(HR > 1.25)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio > 1.25 for the Acute Myocardial
+Infarction outcome. Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is above 1.25.
+
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+stroke_draws = multinma::relative_effects(network_Isch_Stroke_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+stroke_matrix = 
+  stroke_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Ischemic Stroke: Pr(HR > 1.25)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio > 1.25 for the Ischemic Stroke outcome.
+Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is above 1.25.
+
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+any_draws = multinma::relative_effects(network_Any_Death_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+cardio_draws = multinma::relative_effects(network_Cardio_Death_pooled_FE,
+                               summary = F,
+                               all_contrasts = T)
+
+any_matrix = 
+  any_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+
+cardio_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  cardio_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 4))
+  )
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
+new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt()  |> 
+  gt::tab_header(
+    title = "All-cause and Cardiovascular Mortality: Pr(HR > 1.25)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio > 1.25 for the All-cause or
+Cardiovascular mortality outcomes. Treatments are shown in the diagonal.
+Results to the right of this diagonal (right upper half table) correspond to
+the All-cause mortality outcome. Results to the left (left lower half table)
+correspond to the Cardiovascular mortality outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is above 1.25.
+
+
+### Prob ROPE
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", 
+          "AAS_10_Prasugrel", "AAS_75_Clopidogrel", "Pooled_Ticagrelor")
+
+AMI_draws = multinma::relative_effects(network_AMI_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+AMI_matrix = 
+  AMI_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(0.8) & value < log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |>  
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 6))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "AAS_10_Prasugrel" = NA,
+          "AAS_75_Clopidogrel" = NA,
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 7, ncol = 7)
+new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
+          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Acute Myocardial Infarction: Pr(ROPE)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio within the region of practical equivalence
+(ROPE), ie, between 0.80 and 1.25, for the Acute Myocardial Infarction outcome.
+Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is within the ROPE.
+
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+stroke_draws = multinma::relative_effects(network_Isch_Stroke_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+stroke_matrix = 
+  stroke_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(0.8) & value < log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() %>%
+  base::replace(is.na(.), " ") |> 
+  gt::gt() |> 
+  gt::tab_header(
+    title = "Ischemic Stroke: Pr(ROPE)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio within the region of practical equivalence
+(ROPE), ie, between 0.80 and 1.25, for the Ischemic Stroke outcome.
+Treatments are shown in the diagonal. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+posterior probability of `r new[1,2]`% that the hazard ratio is within the ROPE.
+
+
+```{r}
+
+rxp = "^d\\[(.+) vs\\. (.+)\\]$" 
+
+order = c("AAS", "5_Rivaroxaban", "75_Clopidogrel", "AAS_2.5_Rivaroxaban", "Pooled_Ticagrelor")
+
+any_draws = multinma::relative_effects(network_Any_Death_pooled_FE,
+                                        summary = F,
+                                        all_contrasts = T)
+
+cardio_draws = multinma::relative_effects(network_Cardio_Death_pooled_FE,
+                               summary = F,
+                               all_contrasts = T)
+
+any_matrix = 
+  any_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value > log(0.8) & value < log(1.25))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  dplyr::bind_cols(
+    tibble("AAS" = rep(NA, 4))
+  ) |> 
+  # re-arrange column order
+  dplyr::select(order) |> 
+  dplyr::bind_rows(
+    tibble("AAS" = NA,
+           "5_Rivaroxaban" = NA,
+           "75_Clopidogrel" = NA,
+           "AAS_2.5_Rivaroxaban" = NA, 
+          "Pooled_Ticagrelor" = NA)
+  ) |> 
+  as.matrix()
+
+
+cardio_matrix  = 
+  data.frame("AAS" = NA,
+             "5_Rivaroxaban" = NA,
+             "75_Clopidogrel" = NA,
+             "AAS_2.5_Rivaroxaban" = NA, 
+            "Pooled_Ticagrelor" = NA,
+            row.names = "AAS") |> 
+  dplyr::rename("5_Rivaroxaban" = X5_Rivaroxaban,
+                "75_Clopidogrel" = X75_Clopidogrel) |> 
+  dplyr::bind_rows(
+    
+  cardio_draws$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(cols = dplyr::starts_with("d[")) |> 
+  dplyr::group_by(name) |> 
+  dplyr::summarise(pr = 100*mean(value < log(1))) |> 
+  dplyr::transmute(trtb = base::gsub(rxp, "\\1", name),
+                   trta = base::gsub(rxp, "\\2", name),
+                   prob =  base::sprintf("%.2f",
+                                         pr)) |> 
+  dplyr::mutate(trtb = factor(trtb, levels = order)) |> 
+  dplyr::arrange(trtb) |> 
+  tidyr::pivot_wider(names_from = trtb,
+                     values_from = prob) |> 
+  dplyr::rename(" " = trta) |> 
+  t() |> 
+  data.frame() |>
+  # https://stackoverflow.com/questions/32054368/use-first-row-data-as-column-names-in-r
+  janitor::row_to_names(row_number = 1) |> 
+  dplyr::bind_cols(
+    data.frame("Pooled_Ticagrelor" = rep(NA, 4))
+  )
+  ) |> 
+  as.matrix()
+
+# https://stackoverflow.com/questions/38031892/combine-upper-tri-and-lower-tri-matrices-into-a-single-data-frame
+
+new = matrix(NA, nrow = 5, ncol = 5)
+new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
+new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
+
+ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+
+# Rename diagonal with treatment names
+diag(new) = ttnames
+
+new |> 
+  data.frame() |> 
+  gt::gt()  |> 
+  gt::tab_header(
+    title = "All-cause and Cardiovascular Mortality: Pr(ROPE)",
+  )
+```
+
+Posterior probabilities (%) of hazard ratio within the region of practical
+equivalence (ROPE), ie, between 0.80 and 1.25, for the All-cause or
+Cardiovascular mortality outcomes. Treatments are shown in the diagonal. Results
+to the right of this diagonal (right upper half table) correspond to the
+All-cause mortality outcome. Results to the left (left lower half table)
+correspond to the Cardiovascular mortality outcome. Comparisons between
+treatments should be read from left to right and the estimate is in the cell in
+common between the column-defining treatment and the row-defining treatment. 
+For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
+For example, in the Rivaroxaban 5mg vs. AAS comparison for All-cause mortality,
+there was a posterior probability of `r new[1,2]`% that the hazard ratio is
+within the ROPE.
+
+## Ranks + SUCRA
+
+```{r}
+p1 = 
+  multinma::posterior_rank_probs(network_AMI_pooled_FE, lower_better = T) |> 
+  dplyr::as_tibble() |> 
+  dplyr::mutate(Outcome = "AMI") |> 
+  dplyr::bind_rows(
+    posterior_rank_probs(network_Isch_Stroke_pooled_FE, lower_better = T) |> 
+  dplyr::as_tibble() |> 
+  dplyr::mutate(Outcome = "Stroke"),
+  
+  posterior_rank_probs(network_Any_Death_pooled_FE, lower_better = T) |> 
+  dplyr::as_tibble() |> 
+  dplyr::mutate(Outcome = "All-cause Mortality"),
+  
+  posterior_rank_probs(network_Cardio_Death_pooled_FE, lower_better = T) |> 
+  dplyr::as_tibble() |> 
+  dplyr::mutate(Outcome = "Cardiovascular Mortality")
+  ) |> 
+  dplyr::mutate(
+    parameter = dplyr::case_when(
+      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
+      parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      parameter == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
+    
+    parameter = factor(parameter, levels = c("AAS + Prasugrel 10mg",
+                                     "Clopidogrel 75mg",
+                                     "AAS + Rivaroxaban 2.5mg",
+                                     "AAS + Clopidogrel 75mg",
+                                     "Pooled Ticagrelor",
+                                     "Rivaroxaban 5mg",
+                                     "AAS")),
+    
+    Outcome = factor(Outcome, levels = c("AMI", "Stroke",
+                                         "All-cause Mortality",
+                                         "Cardiovascular Mortality"))
+    ) |> 
+  # pivot_longer code below extracted from 
+  # https://github.com/dmphillippo/multinma/blob/HEAD/R/nma_summary-class.R
+  
+  tidyr::pivot_longer(cols = dplyr::starts_with("p_rank"),
+                      names_to = "rank", values_to = "probability",
+                      names_pattern = "^p_rank\\[([0-9]+)\\]$",
+                      names_transform = list(rank = as.integer)) |> 
+  dplyr::mutate(probability = 100*probability) |> 
+  ggplot() + 
+  aes(x = rank, y = probability, group = Outcome, color = Outcome) +
+  geom_line(size = 0.9) +
+  scale_color_manual(values = MetBrewer::met.brewer("Egypt", 4)) +
+  scale_x_continuous(breaks = seq(1, 7, 1)) +
+  scale_y_continuous(breaks = seq(0, 100, 50),
+                     limits = c(0, 110)) +
+  labs(x = "Rank", y = "Probability (%)\n") +
+  facet_wrap(~parameter, nrow = 3) +
+  multinma::theme_multinma() +
+  # https://stackoverflow.com/questions/62304750/ignore-x-label-alignment-with-multiple-plots-in-patchwork-is-this-possible
+  theme(axis.title.x = element_text(margin = margin(t = -80, unit = "pt")),
+        legend.position = "bottom",
+        legend.margin= margin(t = -60, unit = "pt"))
+
+```
+
+```{r}
+ami_sucra = 
+  multinma::posterior_rank_probs(network_AMI_pooled_FE, 
+                               lower_better = T,
+                               sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::mutate(outcome = "AMI")
+
+stroke_sucra = 
+  multinma::posterior_rank_probs(network_Isch_Stroke_pooled_FE, 
+                               lower_better = T,
+                               sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::mutate(outcome = "Stroke")
+
+any_sucra = 
+  multinma::posterior_rank_probs(network_Any_Death_pooled_FE, 
+                               lower_better = T,
+                               sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::mutate(outcome = "All-cause Mortality")
+
+cardio_sucra = 
+  multinma::posterior_rank_probs(network_Cardio_Death_pooled_FE, 
+                               lower_better = T,
+                               sucra = T) |> 
+  data.frame() |> 
+  dplyr::select(parameter, sucra) |> 
+  dplyr::mutate(sucra = round(sucra, 2)) |> 
+  dplyr::arrange(desc(sucra)) |> 
+  dplyr::mutate(outcome = "Cardiovascular Mortality")
+
+p2 = 
+  dplyr::bind_rows(ami_sucra, stroke_sucra, any_sucra, cardio_sucra) |> 
+  dplyr::mutate(
+    
+    parameter = dplyr::case_when(
+      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
+      parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      parameter == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
+    
+    parameter = factor(parameter, levels = rev(c("AAS + Prasugrel 10mg",
+                                                 "AAS + Clopidogrel 75mg",
+                                                 "Clopidogrel 75mg",
+                                                 "Pooled Ticagrelor",
+                                                 "AAS + Rivaroxaban 2.5mg",
+                                                 "Rivaroxaban 5mg",
+                                                 "AAS"))),
+    outcome = factor(outcome, levels = c("AMI", "Stroke",
+                                         "All-cause Mortality",
+                                         "Cardiovascular Mortality"))
+    ) |> 
+  ggplot() +
+  aes(y = parameter, x = outcome, fill = sucra, label = sucra) +
+  geom_tile() +
+  geom_text(size = 4,
+            aes(color = sucra > 0.6),
+            show.legend = F) +
+  scale_color_manual(values = c("black", "white")) +
+  scale_fill_gradientn("SUCRA",
+                       breaks=c(0, 0.50, 1),
+                       limits = c(-0.1, 1.1),
+                       colors = MetBrewer::met.brewer("OKeeffe2")) +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_y_discrete(expand = c(0,0)) +
+  labs(x = NULL, y = NULL) +
+  theme(axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_text(angle=90, vjust=.5, hjust=1),
+        panel.background = element_rect(fill = "white"))
+```
+
+```{r}
+p1 + p2 + patchwork::plot_annotation(tag_levels = "A") +
+  patchwork::plot_layout(widths = c(4, 2))
+```
+
+Panel A: Ranking probabilities for Acute Myocardical Infarction (AMI),
+Stroke, All-cause and Cardiovascular Mortality outcomes for each treatment. There
+are only AMI rankings for "AAS + Prasugrel 10mg" and "AAS + Clopidogrel 75mg"
+because there was no data available for other outcomes in corresponding studies.
+Panel B: Heatmap with corresponding SUCRA values. While each row corresponds to
+a treatment, each column depicts one outcome. 
+
+## Ranks
+
+```{r}
+rxp = "^rank\\[(.+)]$" 
+
+ranks_AMI = 
+  multinma::posterior_ranks(network_AMI_pooled_FE, lower_better = T,
+                          summary = F)
+
+ranks_stroke = 
+  multinma::posterior_ranks(network_Isch_Stroke_pooled_FE, lower_better = T,
+                          summary = F)
+
+ranks_any = 
+  multinma::posterior_ranks(network_Any_Death_pooled_FE, lower_better = T,
+                          summary = F)
+
+ranks_cardio = 
+  multinma::posterior_ranks(network_Cardio_Death_pooled_FE, lower_better = T,
+                          summary = F)
+
+ranks_AMI$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(dplyr::starts_with("rank[")) |> 
+  dplyr::mutate(name = base::gsub(rxp, "\\1", name)) |> 
+  dplyr::mutate(outcome = "AMI") |> 
+  dplyr::bind_rows(
+    ranks_stroke$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(dplyr::starts_with("rank[")) |> 
+  dplyr::mutate(name = base::gsub(rxp, "\\1", name)) |> 
+  dplyr::mutate(outcome = "Stroke"),
+  
+  ranks_any$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(dplyr::starts_with("rank[")) |> 
+  dplyr::mutate(name = base::gsub(rxp, "\\1", name)) |> 
+  dplyr::mutate(outcome = "All-cause Mortality"),
+  
+  ranks_cardio$sims |> 
+  posterior::as_draws_df() |> 
+  tidyr::pivot_longer(dplyr::starts_with("rank[")) |> 
+  dplyr::mutate(name = base::gsub(rxp, "\\1", name)) |> 
+  dplyr::mutate(outcome = "Cardiovascular Mortality"),
+  ) |> 
+  dplyr::mutate(
+     name = dplyr::case_when(
+      name == "AAS" ~ "AAS",
+      name == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
+      name == "75_Clopidogrel" ~ "Clopidogrel 75mg",
+      name == "AAS_2.5_Rivaroxaban" ~ "AAS + Rivaroxaban 2.5mg",
+      name == "AAS_10_Prasugrel" ~ "AAS + Prasugrel 10mg",
+      name == "AAS_75_Clopidogrel" ~ "AAS + Clopidogrel 75mg",
+      name == "Pooled_Ticagrelor" ~ "Pooled Ticagrelor"),
+    
+    name = factor(name, levels = rev(c("AAS + Prasugrel 10mg",
+                                                 "AAS + Clopidogrel 75mg",
+                                                 "Clopidogrel 75mg",
+                                                 "Pooled Ticagrelor",
+                                                 "AAS + Rivaroxaban 2.5mg",
+                                                 "Rivaroxaban 5mg",
+                                                 "AAS"))),
+    outcome = factor(outcome, levels = c("AMI", "Stroke",
+                                         "All-cause Mortality",
+                                         "Cardiovascular Mortality"))) |> 
+  
+  ggplot() +
+  aes(x = value, y = name, fill = name) +
+  ggdist::stat_cdfinterval(.width = 0.95,
+                       point_interval = ggdist::median_qi) +
+  scale_fill_manual(values= MetBrewer::met.brewer("Greek", 8)) +
+  scale_x_continuous(breaks = seq(1, 8, 1)) +
+  labs(x = "Rank", y = NULL) +
+  facet_wrap(~outcome, nrow = 1, scales = "free_x") +
+  multinma::theme_multinma() +
+  theme(legend.position = "none")
+
+
+```
+
+Marginal posterior distributions for the rank of each treatment. Each panel 
+corresponds to a separate outcome, labeled on top. In each panel,
+there are a point estimate, interval bar, and bar plot for each treatment (Y-axis).
+The point estimate represents the median rank. The interval bar shows the 95%
+credible (quantile) interval of the underlying marginal posterior distribution.
+Lastly, the bar plot shows the cumulative distribution function (CDF).  
