@@ -21,7 +21,7 @@ All analyses were conducted in R (R Environment version 4.1.2).
 
     *Vuorre M, Curley JP. Curating Research Assets: A Tutorial on the Git Version Control System. Advances in Methods and Practices in Psychological Science 2018;1:219–36.* [https://doi.org/10.1177%2F2515245918754826](https://doi.org/10.1177%2F2515245918754826)
 
-       After cloning this repository, open the `toci_sari_bari.Rproj` file and you will be able to run all files.
+       After cloning this repository, open the `ARICOCAD_nma.Rproj` file and you will be able to run all files.
 
 2. Bayesian models were fitted with the R package [multinmma](https://dmphillippo.github.io/multinma/) in this folder.
 
