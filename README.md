@@ -1,7 +1,6 @@
 This repository contains code and data to reproduce analysis in the research article:
 
-## **Antithrombotic Regimens for the Prevention of Major Adverse Cardiac Events in Chronic Coronary Syndrome: A Systematic Review and Network Meta-Analysis
-**
+## **Antithrombotic Regimens for the Prevention of Major Adverse Cardiac Events in Chronic Coronary Syndrome: A Systematic Review and Network Meta-Analysis**
 
 PROSPERO: CRD42022308499
 
