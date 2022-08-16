@@ -13,10 +13,12 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r}
-# Ensures the package "groundhog" is installed
-if (!require("groundhog")) install.packages("groundhog")
+# Ensures the package "pacman" is installed
+if (!require("pacman")) install.packages("pacman")
 
-pkgs = c("rio",
+# Install/Load packages
+
+pacman::p_load(
          "here",
          "dplyr",
          "multinma",
@@ -29,11 +31,11 @@ pkgs = c("rio",
          "ggraph",
          "igraph",
          "MetBrewer",
-         "Hmisc") # %nin%
+         "Hmisc",
+         "rio")
 
-# Install/Load packages
-
-groundhog::groundhog.library(pkgs, "2022-03-14")
+# Ensure packages are loaded following what's stored in renv's lockfile
+renv::restore()
 
 # Load custom function for model diagnostics
 
@@ -392,6 +394,9 @@ d_MACE_pooled[
   "std.err"] =
   # Insert log hazard SE
   MACE_tica_pooled_se_control$se_control
+
+# rio::export(d_MACE_pooled, 
+#             file = here::here("output/data/MACE_pooled.csv"))
 ```
 
 
@@ -643,7 +648,8 @@ d_safety_pooled[
   # Insert log hazard SE
   safety_tica_pooled_se_control$se_control
 
-
+# rio::export(d_safety_pooled, 
+#             file = here::here("output/data/safety_pooled.csv"))
 ```
 
 ### Forest
@@ -892,6 +898,9 @@ d_AMI_pooled[
   "std.err"] =
   # Insert log hazard SE
   AMI_tica_pooled_se_control$se_control
+
+# rio::export(d_AMI_pooled, 
+#             file = here::here("output/data/AMI_pooled.csv"))
 ```
 
 
@@ -1141,6 +1150,9 @@ d_Isch_Stroke_pooled[
   "std.err"] =
   # Insert log hazard SE
   Isch_Stroke_tica_pooled_se_control$se_control
+
+# rio::export(d_Isch_Stroke_pooled, 
+#             file = here::here("output/data/stroke_pooled.csv"))
 ```
 
 
@@ -1385,6 +1397,9 @@ d_Any_Death_pooled[
   "std.err"] =
   # Insert log hazard SE
   Any_Death_tica_pooled_se_control$se_control
+
+# rio::export(d_Any_Death_pooled, 
+#             file = here::here("output/data/any_death_pooled.csv"))
 ```
 
 
@@ -1629,6 +1644,9 @@ d_Cardio_Death_pooled[
   "std.err"] =
   # Insert log hazard SE
   Cardio_Death_tica_pooled_se_control$se_control
+
+# rio::export(d_Cardio_Death_pooled, 
+#             file = here::here("output/data/cardio_death_pooled.csv"))
 ```
 
 
@@ -1877,7 +1895,8 @@ d_MACE_not_pooled[
   # Insert log hazard SE
   MACE_not_pooled_se_control$se_control
 
-
+# rio::export(d_MACE_not_pooled, 
+#             file = here::here("output/data/MACE_not_pooled.csv"))
 ```
 
 
@@ -2128,6 +2147,9 @@ d_safety_not_pooled[
   "std.err"] =
   # Insert log hazard SE
   safety_not_pooled_se_control$se_control
+
+# rio::export(d_safety_not_pooled, 
+#             file = here::here("output/data/safety_not_pooled.csv"))
 
 
 ```

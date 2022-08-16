@@ -2,10 +2,7 @@
 title: "Figures and Tables"
 author: "Arthur M. Albuquerque"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
-output: 
-  html_document:
-          toc: yes
-          toc_float: yes
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
@@ -17,33 +14,87 @@ knitr::opts_chunk$set(
 )
 ```
 
-```{r}
-# Ensures the package "groundhog" is installed
-if (!require("groundhog")) install.packages("groundhog")
+```{r results = FALSE}
+# Ensures the package "pacman" is installed
+if (!require("pacman")) install.packages("pacman")
 
 # Install/Load packages
-pkgs = c("rio",
-         "here",
-         "dplyr",
-         "multinma",
-         "metafor",
-         "ggdist",
-         "posterior",
-         "janitor",
-         "gt",
-         "ggplot2",
-         "patchwork")
+pacman::p_load("dplyr",
+               "purrr",
+               "stringr",
+               "fs",
+               "here",
+               "multinma",
+               "metafor",
+               "ggdist",
+               "posterior",
+               "janitor",
+               "gt",
+               "igraph",
+               "ggplot2",
+               "patchwork")
 
-groundhog::groundhog.library(pkgs, "2022-03-14")
+# Ensure packages are loaded following what's stored in renv's lockfile
+renv::restore()
 
 # Load models
+load(here::here("output", "fits", "pooled_MACE_FE.RData"))
+load(here::here("output", "fits", "pooled_safety_FE.RData"))
 
-load(here::here("output/fits/pooled_MACE_FE.RData"))
-load(here::here("output/fits/pooled_safety_FE.RData"))
+# Load multiple datasets for network plots
+# https://dominicroye.github.io/en/2019/import-excel-sheets-with-r/
+
+rgx = "(?<=data(.{1})).+?(?=.csv)"
+
+data = 
+  fs::dir_ls(path = here::here("output", "data"),
+       regexp = "csv") |> 
+  purrr::map_df(utils::read.csv,
+                .id = "outcome") |> 
+  dplyr::mutate(outcome = stringr::str_extract(string = outcome,
+                                               pattern = rgx)) |> 
+  dplyr::mutate(treatment = dplyr::case_when(
+      treatment == "AAS" ~ "ASA",
+      treatment == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
+      treatment == "75_Clopidogrel" ~ "Clopidogrel 75mg",
+      treatment == "AAS_2.5_Rivaroxaban" ~ "ASA + Rivaroxaban 2.5mg",
+      treatment == "AAS_10_Prasugrel" ~ "ASA + Prasugrel 10mg",
+      treatment == "AAS_75_Clopidogrel" ~ "ASA + Clopidogrel 75mg",
+      treatment == "60_Ticagrelor" ~ "ASA + Ticagrelor 60mg",
+      treatment == "90_Ticagrelor" ~ "ASA + Ticagrelor 90mg",
+      treatment == "Pooled_Ticagrelor" ~ "ASA + Pooled Ticagrelor"))
 ```
 
 
-# Figure 2B
+
+# Figure 2
+
+```{r}
+# Network
+
+net_fun = function(data_sub){
+  
+  multinma::set_agd_contrast(data = data_sub,
+                               trt_ref = "ASA",
+                               study = study,
+                               trt = treatment,
+                               y = logHR,
+                               se = std.err,
+                               sample_size = n_patients) |> 
+  
+  igraph::as.igraph() |> 
+    plot(vertex.color = "blue",
+         vertex.label.color = "black",
+         edge.color = "black",
+         layout = igraph::layout.circle,
+         vertex.label.dist = 3,
+         vertex.size=15,
+         margin=c(0, 3, 0,0 )) 
+  
+}
+
+
+```
 
 ```{r}
 # Create function to automate data wrangling for forest plot
@@ -107,13 +158,13 @@ both =
   dplyr::left_join(probs) |>
   dplyr::mutate(
     name = dplyr::case_when(
-      name == "d[AAS]" ~ "AAS",
+      name == "d[AAS]" ~ "ASA",
       name == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
       name == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
-      name == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
-      name == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
-      name == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
-      name == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
+      name == "d[AAS_2.5_Rivaroxaban]" ~ "ASA + Rivaroxaban 2.5mg",
+      name == "d[AAS_10_Prasugrel]" ~ "ASA + Prasugrel 10mg",
+      name == "d[AAS_75_Clopidogrel]" ~ "ASA + Clopidogrel 75mg",
+      name == "d[Pooled_Ticagrelor]" ~ "ASA + Pooled Ticagrelor"),
     
     outcome = outcome_name
     )
@@ -157,7 +208,7 @@ forest_fun = function(){
                 pch = 19, # point estimate as circle
                 psize = 1.4, # Circle size
                 efac=0, # Remove vertical lines at interval bars
-                header="Compared with AAS",
+                header="Compared with ASA",
                 xlab = "Hazard Ratio (log scale)",
                 cex = 1, # Text size
                 cex.lab = 1) # X axis label font size
@@ -165,7 +216,7 @@ forest_fun = function(){
 
 # ROPE gray area
 graphics::rect(xleft = log(0.8), xright = log(1/0.8),
-               ybottom = x$ylim[1] - 1, ytop = x$ylim[2] - 2,
+               ybottom = x$ylim[1] - 0.6, ytop = x$ylim[2] - 2,
                border = NA, # no borders
                col = grDevices::adjustcolor("gray70", alpha.f = 0.4))
 
@@ -200,24 +251,35 @@ graphics::text(1+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4),
 
 # Save as PDF
 
-# pdf(file = here::here("output", "plots",
-#                       'forest.pdf'),
-#     height=6, width=12)
-# 
-# forest_fun()
-# 
-# dev.off()
+pdf(file = here::here("output", "plots",
+                      '01_network_forest.pdf'),
+    height=6, width=24)
+
+par(mfrow = c(1, 2), # 2 figures, side by side ("1 row, 2 columns")
+    # Margins
+    mar=c(4, # bottom
+          0, # left
+          3, # top
+          2) # right
+    ) 
+
+net_fun(subset(data, outcome == "MACE_pooled")) 
+# net_fun(subset(data, outcome == "safety_pooled")) same network
+
+forest_fun()
+
+dev.off()
 
 ```
 
 ```{r}
 # Show previously saved forest plot
 knitr::include_graphics(here::here("output", "plots",
-                                   "forest.png"))
+                                   "01_network_forest.png"))
 
 ```
 
-Treatment effects compared to AAS on MACE and Bleeding outcomes, ordered according
+Network Plot; Treatment effects compared to ASA on MACE and Bleeding outcomes, ordered according
 to underlying SUCRA values. HR below 1.0 favors the experimental treatment.
 On the left, treatment names are depicted. In the middle,
 forest plot shows each treatment effect median and 95% credible intervals. Gray
@@ -244,21 +306,21 @@ p1 =
   # Rename treatment effects and re-order
   dplyr::mutate(
     parameter = dplyr::case_when(
-      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[AAS]" ~ "ASA",
       parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
       parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
-      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
-      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
-      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
-      parameter == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "ASA + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "ASA + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "ASA + Clopidogrel 75mg",
+      parameter == "d[Pooled_Ticagrelor]" ~ "ASA + Pooled Ticagrelor"),
     
-    parameter = factor(parameter, levels = c("AAS + Prasugrel 10mg",
+    parameter = factor(parameter, levels = c("ASA + Prasugrel 10mg",
                                      "Clopidogrel 75mg",
-                                     "AAS + Rivaroxaban 2.5mg",
-                                     "AAS + Clopidogrel 75mg",
-                                     "Pooled Ticagrelor",
+                                     "ASA + Rivaroxaban 2.5mg",
+                                     "ASA + Clopidogrel 75mg",
+                                     "ASA + Pooled Ticagrelor",
                                      "Rivaroxaban 5mg",
-                                     "AAS")),
+                                     "ASA")),
     Outcome = factor(Outcome, levels = c("MACE", "Bleeding"))
     ) |> 
   
@@ -316,20 +378,20 @@ p2 =
   # Rename treatment effects and re-order
   dplyr::mutate(
     parameter = dplyr::case_when(
-      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[AAS]" ~ "ASA",
       parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
       parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
-      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
-      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
-      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
-      parameter == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
-    parameter = factor(parameter, levels = rev(c("AAS + Prasugrel 10mg",
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "ASA + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "ASA + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "ASA + Clopidogrel 75mg",
+      parameter == "d[Pooled_Ticagrelor]" ~ "ASA + Pooled Ticagrelor"),
+    parameter = factor(parameter, levels = rev(c("ASA + Prasugrel 10mg",
                                      "Clopidogrel 75mg",
-                                     "AAS + Rivaroxaban 2.5mg",
-                                     "AAS + Clopidogrel 75mg",
-                                     "Pooled Ticagrelor",
+                                     "ASA + Rivaroxaban 2.5mg",
+                                     "ASA + Clopidogrel 75mg",
+                                     "ASA + Pooled Ticagrelor",
                                      "Rivaroxaban 5mg",
-                                     "AAS"))),
+                                     "ASA"))),
     outcome = factor(outcome, levels = c("MACE", "Bleeding"))
     ) |> 
   
@@ -356,6 +418,11 @@ p2 =
 # Show both plots together
 p1 + p2 + patchwork::plot_annotation(tag_levels = "A") +
   patchwork::plot_layout(widths = c(5, 1))
+
+
+ggsave(filename = here::here("output", "plots",
+                             '02_main_ranks.pdf'),
+       height=4, width=11)
 ```
 
 Panel A: Ranking probabilities for MACE (solid line) and Bleeding (dotted line)

@@ -1,12 +1,35 @@
 ---
-title: "Supplementary Material"
-author: "Arthur M. Albuquerque"
-date: '`r format(Sys.Date(), "%B %d, %Y")`'
-output: 
-  html_document:
-          toc: yes
-          toc_float: yes
+title: "**Supplementary Online Content**"
+subtitle: 'Antithrombotic Regimens for the Prevention of Major Adverse Cardiac Events in Patients with Chronic Coronary Syndrome - A Systematic Review and Network Meta-Analysis'
+output:
+  pdf_document: 
+    keep_tex: true 
+fontsize: 12pt
+header-includes: 
+# https://tex.stackexchange.com/questions/526101/how-to-customize-header-with-rmarkdown
+  - \usepackage{titling}
+  - \pretitle{\begin{center}\huge\bfseries}
+  - \posttitle{\end{center}} 
+  
+# https://stackoverflow.com/questions/25849814/rstudio-rmarkdown-both-portrait-and-landscape-layout-in-a-single-pdf
+  - \usepackage{pdflscape} 
+  - \newcommand{\blandscape}{\begin{landscape}}
+  - \newcommand{\elandscape}{\end{landscape}}
+  
+# https://tex.stackexchange.com/questions/84506/landscape-mode-causes-a-blankpage
+  - \usepackage{geometry}
+  
+# https://www.overleaf.com/learn/latex/Table_of_contents
+  - \renewcommand\contentsname{Table of Contents}
+  
+# https://tex.stackexchange.com/questions/28392/how-to-suppress-caption-numbering-in-a-table
+  - \usepackage{caption}
+  - \captionsetup[table]{labelformat=empty}
 ---
+
+\newpage 
+\tableofcontents 
+\newpage
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
@@ -17,25 +40,97 @@ knitr::opts_chunk$set(
 )
 ```
 
-```{r}
-# Ensures the package "groundhog" is installed
-if (!require("groundhog")) install.packages("groundhog")
+```{r message=FALSE, warning=FALSE, results="hide"}
+# Ensures the package "pacman" is installed
+if (!require("pacman")) install.packages("pacman")
 
 # Install/Load packages
-pkgs = c("rio",
-         "here",
-         "dplyr",
-         "multinma",
-         "metafor",
-         "ggdist",
-         "posterior",
-         "janitor",
-         "ggplot2",
-         "MetBrewer",
-         "patchwork",
-         "gt")
+pacman::p_load("rio",
+               "Hmisc",
+               "here",
+               "dplyr",
+               "tidyr",
+               "multinma",
+               "metafor",
+               "ggdist",
+               "posterior",
+               "janitor",
+               "ggplot2",
+               "MetBrewer",
+               "patchwork",
+               "kableExtra",
+               "igraph",
+               "purrr",
+               "stringr",
+               "fs")
 
-groundhog::groundhog.library(pkgs, "2022-03-14")
+# Ensure packages are loaded following what's stored in renv's lockfile
+renv::restore()
+
+defs = rio::import(here::here("data", "mace_safety_definitions.xlsx")) 
+
+ef = rio::import(here::here("data", "effect_modifiers.xlsx")) 
+
+# Load multiple datasets for network plots
+# https://dominicroye.github.io/en/2019/import-excel-sheets-with-r/
+
+rgx = "(?<=data(.{1})).+?(?=.csv)"
+
+data = 
+  fs::dir_ls(path = here::here("output", "data"),
+       regexp = "csv") |> 
+  purrr::map_df(utils::read.csv,
+                .id = "outcome") |> 
+  dplyr::mutate(outcome = stringr::str_extract(string = outcome,
+                                               pattern = rgx)) |> 
+  dplyr::mutate(treatment = dplyr::case_when(
+      treatment == "AAS" ~ "ASA",
+      treatment == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
+      treatment == "75_Clopidogrel" ~ "Clopidogrel 75mg",
+      treatment == "AAS_2.5_Rivaroxaban" ~ "ASA + Rivaroxaban 2.5mg",
+      treatment == "AAS_10_Prasugrel" ~ "ASA + Prasugrel 10mg",
+      treatment == "AAS_75_Clopidogrel" ~ "ASA + Clopidogrel 75mg",
+      treatment == "60_Ticagrelor" ~ "ASA + Ticagrelor 60mg",
+      treatment == "90_Ticagrelor" ~ "ASA + Ticagrelor 90mg",
+      treatment == "Pooled_Ticagrelor" ~ "ASA + Pooled Ticagrelor"))
+
+# Load RoB2 and CINEMA
+
+rob = rio::import(here::here("data", "rob2.xlsx")) |> 
+  dplyr::mutate(outcome =
+                  # Unify all safety outcomes as one, "safety"
+                  ifelse(outcome %nin% c("AMI",
+                                         "Isch_Stroke",
+                                         "Cardio_Death",
+                                         "Any_Death",
+                                         "MACE_ITT"),
+                         "safety", outcome)) |> 
+  dplyr::mutate(treatment1 = dplyr::case_when(
+      treatment1 == "AAS" ~ "ASA",
+      treatment1 == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
+      treatment1 == "75_Clopidogrel" ~ "Clopidogrel 75mg",
+      treatment1 == "AAS_2.5_Rivaroxaban" ~ "ASA + Rivaroxaban 2.5mg",
+      treatment1 == "AAS_10_Prasugrel" ~ "ASA + Prasugrel 10mg",
+      treatment1 == "AAS_75_Clopidogrel" ~ "ASA + Clopidogrel 75mg",
+      treatment1 == "60_Ticagrelor" ~ "ASA + Ticagrelor 60mg",
+      treatment1 == "90_Ticagrelor" ~ "ASA + Ticagrelor 90mg",
+      treatment1 == "Pooled_Ticagrelor" ~ "ASA + Pooled Ticagrelor",
+      treatment1 == "ASA + Prasugrel 10mg or Clopidogrel 75mg" ~ 
+        "ASA + Prasugrel 10mg or Clopidogrel 75mg")) |> 
+  dplyr::mutate(treatment2 = dplyr::case_when(
+      treatment2 == "AAS" ~ "ASA",
+      treatment2 == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
+      treatment2 == "75_Clopidogrel" ~ "Clopidogrel 75mg",
+      treatment2 == "AAS_2.5_Rivaroxaban" ~ "ASA + Rivaroxaban 2.5mg",
+      treatment2 == "AAS_10_Prasugrel" ~ "ASA + Prasugrel 10mg",
+      treatment2 == "AAS_75_Clopidogrel" ~ "ASA + Clopidogrel 75mg",
+      treatment2 == "60_Ticagrelor" ~ "ASA + Ticagrelor 60mg",
+      treatment2 == "90_Ticagrelor" ~ "ASA + Ticagrelor 90mg",
+      treatment2 == "Pooled_Ticagrelor" ~ "ASA + Pooled Ticagrelor")) |> 
+  dplyr::mutate("Study, Comparison" = stringr::str_c(study, ", ",
+                                            treatment1, " vs.", treatment2))
+
+cinema = rio::import(here::here("data", "cinema.xlsx")) 
 
 # Load models
 load(here::here("output", "fits", "pooled_MACE_FE.RData"))
@@ -50,11 +145,274 @@ load(here::here("output", "fits", "pooled_Any_Death_FE.RData"))
 load(here::here("output", "fits", "pooled_Cardio_Death_FE.RData"))
 ```
 
-# Pooled Ticagrelor Networks: MACE and Bleeding
+\newpage
+
+
+# Systematic Review
+
+## Search Strategies
+
+```{r}
+data.frame(
+  "Database" = c("PubMed", "EMBASE", "CENTRAL"),
+  "Terms" = c('(“Arteriosclerosis”[mh] OR “Angina, Stable”[mh]) AND (“Platelet Aggregation Inhibitors” [Mesh] OR “Dual Anti-Platelet Therapy” [Mesh] OR “Aspirin”[mh] OR “Clopidogrel”[mh] OR “Factor Xa Inhibitors”[mh] OR “apixaban”[Supplementary Concept] OR “edoxaban”[Supplementary Concept] OR “Rivaroxaban”[mh] OR “Purinergic P2Y Receptor Antagonists”[mh] OR “Ticagrelor”[mh] OR “Prasugrel”[tw] OR “Vorapaxar”[tw]) AND (“Myocardial Infarction”[mh] OR “Angina, Unstable”[mh] OR “Stroke”[Mesh] OR Death, Sudden, Cardiac [Mesh] OR “Myocardial Revascularization”[mh] OR “Major Adverse Cardiac Event”[tw] OR “Hemorrhage”[mh])',
+              "(‘atherosclerosis’/exp OR ‘stable angina pectoris’/exp) AND (‘antithrombocytic agent’/exp OR ‘dual antiplatelet therapy’/exp OR ‘acetylsalicylic acid’/mj OR ‘clopidogrel’/mj OR ‘blood clotting factor 10a inhibitor’/exp OR ‘apixaban’/mj OR ‘edoxaban’/mj OR ‘rivaroxaban’/mj OR ‘purinergic p2y receptor antagonist’/exp OR ‘ticagrelor’/mj OR ‘prasugrel’/mj OR ‘vorapaxar’/mj) AND (‘heart infarction’/mj OR ‘unstable angina pectoris’/mj OR ’cerebrovascular accident’/mj OR ‘heart muscle revascularization’/exp OR ‘major adverse cardiac event’/mj OR ‘bleeding’/exp) ",
+              "/#1 MeSH descriptor: [Arteriosclerosis] explode all trees 11018
+/#2 MeSH descriptor: [Angina, Stable] explode all trees 360
+/#3 #1 OR #2 11264
+/#4 MeSH descriptor: [Platelet Aggregation Inhibitors] explode all trees 4016
+/#5 MeSH descriptor: [Dual Anti-Platelet Therapy] explode all trees 45
+/#6 MeSH descriptor: [Aspirin] explode all trees 6018
+/#7 MeSH descriptor: [Clopidogrel] explode all trees 2074
+/#8 MeSH descriptor: [Factor Xa Inhibitors] explode all trees 572
+/#9 (apixaban):ti,ab,kw 984
+/#10 (edoxaban):ti,ab,kw 598
+/#11 MeSH descriptor: [Rivaroxaban] explode all trees 568
+/#12 MeSH descriptor: [Purinergic P2Y Receptor Antagonists] explode all trees 359
+/#13 MeSH descriptor: [Ticagrelor] explode all trees 786
+/#14 #4 OR #5 OR #6 OR #7 OR #8 OR #9 OR #10 OR #11 OR #12 OR #13 10962
+/#15 MeSH descriptor: [Myocardial Infarction] explode all trees 11333
+/#16 MeSH descriptor: [Angina, Unstable] explode all trees 1138
+/#17 MeSH descriptor: [Stroke] explode all trees 10342
+/#18 MeSH descriptor: [Death, Sudden, Cardiac] explode all trees 635
+/#19 MeSH descriptor: [Myocardial Revascularization] explode all trees 9254
+/#20 (Major Adverse Cardiac Event):ti,ab,kw 2745
+/#21 MeSH descriptor: [Hemorrhage] explode all trees 14754
+/#22 #15 OR #16 OR #17 OR #18 OR #19 OR #20 OR #21 43672
+/#23 #3 AND #14 AND #22 
+")
+) |> 
+  kableExtra::kbl(booktabs = F) |> 
+  kableExtra::column_spec(1, bold = T) |> 
+  kableExtra::kable_styling(latex_options = "striped",
+                            # striped doesn't work with full_width :(
+                            # https://github.com/haozhu233/kableExtra/issues/427
+                            full_width = T,
+                            font_size = 9.3)
+```
+
+\newpage
+
+## eTable 1: Trial definitions
+
+```{r}
+defs |> 
+  kableExtra::kbl(booktabs = F) |>
+  kableExtra::column_spec(1, bold = T) |> 
+  kableExtra::kable_styling(latex_options = "striped",
+                            # striped doesn't work with full_width :(
+                            # https://github.com/haozhu233/kableExtra/issues/427
+                            full_width = T,
+                            font_size = 9.5) 
+```
+
+\footnotesize
+
+\* Moderate bleeding is defined as bleeding requiring blood transfusion, but not
+resulting in hemodynamic compromise, and severe bleeding is defined as either an
+intracerebral hemorrhage or bleeding resulting in substantial hemodynamic
+compromise requiring treatment according to the GUSTO criteria.
+
+** BARC type bleeding of 3 is defined as clinical, laboratory, and/or imaging
+evidence of bleeding with healthcare responses, as listed: Any transfusion with
+overt bleeding; Overt bleeding plus hemoglobin (Hb) drop >=3 to <5 g/dI (provided
+Hb drop is related to bleeding); Overt bleeding plus Hb drop >=5 g/dl; Cardiac
+tamponade; Bleeding requiring surgical intervention for control; Bleeding
+requiring intravenous vasoactive drugs; Intracranial hemorrhage; Intraocular
+bleed compromising vision.
+
+*** TIMI major bleeding is defined as any intracranial bleeding (excluding
+microhemorrhages <10 mm evident only on gradient-echo MRI), or clinically overt
+signs of hemorrhage associated with a drop in hemoglobin of >=5 g/dL or a >=15%
+absolute decrease in haematocrit, or a fatal bleeding (bleeding that directly
+results in death within 7 d).
+
+\normalsize
+
+
+## eFigure 1: Effect Modifiers
+
+```{r fig.width=8, fig.height=6}
+ef |> 
+  dplyr::mutate(combo = stringr::str_c(study, ": ", treatment)) |> 
+  tidyr::pivot_longer(cols = c(female:multivessel)) |> 
+  dplyr::mutate(name = dplyr::case_when(
+    name == "female" ~ "F",
+    name == "hypertension" ~ "HTN",
+    name == "diabetes" ~ "D",
+    name == "smoker" ~ "S",
+    name == "pci" ~ "PCI",
+    name == "cagb" ~ "CAGB",
+    name == "multivessel" ~ "MVD"),
+    
+    name = factor(name, levels = c(
+      "F",
+      "HTN",
+      "D",
+      "S",
+      "PCI",
+      "CAGB",
+      "MVD"
+    ))) |> 
+  ggplot() +
+  aes(x = name, y = combo, fill = value, label = value) + 
+  geom_tile() +
+  geom_text(size = 4, aes(color = value < 50),
+            show.legend = F) +
+  scale_color_manual(values = c("white", "black")) +
+  scale_fill_gradientn("Proportion\n",
+                       breaks=c(0, 50, 100),
+                       labels = c("0%", "50%","100%"),
+                       limits = c(0, 100),
+                       colors = MetBrewer::met.brewer("Tam")) +
+  scale_x_discrete(expand = c(0,0), position = "top") +
+  scale_y_discrete(expand = c(0,0)) +
+  labs(x = NULL, y = NULL) +
+  theme(plot.title.position = "plot",
+        legend.position = "bottom",
+        plot.title = element_text(size = 16),
+        strip.text.x = element_text(size = 12,
+                                    face="bold"),
+        axis.text.x= element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.ticks.x=element_blank(),
+        axis.ticks.y=element_blank(),
+        legend.title = element_text(size=12),
+        legend.text = element_text(size=12),
+        plot.margin = margin(40, 40, 40, 40))
+```
+
+Heatmap on the proportions of potential efffect modifiers across included
+studies and treatment arms. Each row corresponds to a specific study and
+treatment arm combination. Each column corresponds to a specific effect modifier.
+The exact proportion is depicted by both filled color and the number on top in 
+each cell.
+
+
+Abbreviations: F, female; HTN, hypertension; D, diabetes; S, smoker; PCI,
+percutaneous coronary intervention; CAGB, coronary artery bypass graft; MVD,
+multivessel disease.
+
+\newpage
+
+## eTable 2: Risk of Bias Assessment
+
+Risk of bias for domain-level as well as overall judgements. 
+
+D1: bias arising from randomisation process; D2: bias arising from
+deviations from intended interventions; D3: bias due to missing outcome data;
+D4: bias in measurement of the outcome; D5: bias in selection of the reported
+result.
+
+
+
+```{r}
+
+rob$`D1` = kableExtra::cell_spec(
+  rob$`D1`,
+  color = "white",
+  background = ifelse(rob$`D1` == "Low",
+                      "#5CA881", "#E7B03C")
+)
+
+rob$`D2` = kableExtra::cell_spec(
+  rob$`D2`,
+  color = "white",
+  background = ifelse(rob$`D2` == "Low",
+                      "#5CA881", "#E7B03C")
+)
+
+rob$`D3` = kableExtra::cell_spec(
+  rob$`D3`,
+  color = "white",
+  background = ifelse(rob$`D3` == "Low",
+                      "#5CA881", "#E7B03C")
+)
+
+rob$`D4` = kableExtra::cell_spec(
+  rob$`D4`,
+  color = "white",
+  background = ifelse(rob$`D4` == "Low",
+                      "#5CA881", "#E7B03C")
+)
+
+rob$`D5` = kableExtra::cell_spec(
+  rob$`D5`,
+  color = "white",
+  background = ifelse(rob$`D5` == "Low",
+                      "#5CA881", "#E7B03C")
+)
+
+rob$`Overall` = kableExtra::cell_spec(
+  rob$`Overall`,
+  color = "white",
+  background = ifelse(rob$`Overall` == "Low",
+                      "#5CA881", "#E7B03C")
+)
+
+
+tab_fun_rob = function(name){
+  
+rob |> 
+  dplyr::filter(outcome == name) |> 
+  dplyr::select("Study, Comparison", D1:Overall) |> 
+  kableExtra::kbl(booktabs = T, escape = F) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
+  
+}
+```
+
+### MACE
+
+```{r}
+tab_fun_rob(name = "MACE_ITT")
+```
+
+### Bleeding
+
+```{r}
+tab_fun_rob(name = "safety")
+```
+
+
+\newpage
+
+### Acute Myocardial Infarction
+
+```{r}
+
+tab_fun_rob("AMI") 
+```
+
+### Ischemic Stroke
+
+```{r}
+tab_fun_rob("Isch_Stroke") 
+```
+
+### All-cause Mortality
+
+```{r}
+
+tab_fun_rob("Any_Death") 
+```
+
+### Cardiovascular Mortality
+
+```{r}
+
+tab_fun_rob("Cardio_Death") 
+```
+
+\newpage
+
+\blandscape
+
+# Pooled Ticagrelor Networks: MACE and Bleeding Outcomes
 
 ## League Tables
 
-### Credible Intervals
+### eTable 3: Median and 95% Credible Intervals
 
 ```{r}
 # regex code to apply below inspired by:
@@ -156,18 +514,16 @@ new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "95% Credible Intervals",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Hazard ratios (95% credible interval) for the MACE or Bleeding outcomes.
@@ -177,10 +533,12 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, the corresponding
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, the corresponding
 HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
 
-### Posterior Probability (Prob) < 1
+\newpage
+
+### eTable 4: Posterior Probabilities of Hazard Ratio < 1.0
 
 ```{r}
 # Similar code as code chunk above, but now for a league table showing
@@ -261,19 +619,19 @@ new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Pr(HR < 1.0)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
+
+
 
 Posterior probabilities (%) of hazard ratio < 1.0 for the MACE or Bleeding outcomes.
 Treatments are shown in the diagonal. Results to the right of this diagonal
@@ -282,11 +640,13 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is below 1.0 (ie,
 there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
 
-### Prob < 0.8
+\newpage
+
+### eTable 5: Posterior Probabilities of Hazard Ratio < 0.8
 
 ```{r}
 # Similar code as code chunk above, but now for a league table showing
@@ -367,18 +727,16 @@ new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Pr(HR < 0.8)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio < 0.8 for the MACE or Bleeding outcomes.
@@ -388,11 +746,13 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is below 0.8 (ie,
 there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
 
-### Prob > 1.25
+\newpage
+
+### eTable 6: Posterior Probabilities of Hazard Ratio > 1.25
 
 ```{r}
 # Similar code as code chunk above, but now for a league table showing
@@ -473,18 +833,16 @@ new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Pr(HR > 1.25)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio > 1.25 for the MACE or Bleeding outcomes.
@@ -494,10 +852,12 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is above 1.25.
 
-### Prob ROPE
+\newpage
+
+### eTable 7: Posterior Probabilities of Hazard Ratio within the ROPE
 
 ```{r}
 # Similar code as code chunk above, but now for a league table showing
@@ -579,18 +939,16 @@ new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Pr(ROPE)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 
@@ -602,11 +960,13 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is within the ROPE.
 
+\elandscape
 
-## Ranks
+
+## eFigure 2: Ranks with Uncertainty 
 
 ```{r}
 
@@ -637,21 +997,21 @@ ranks_MACE$sims |>
   ) |> 
   # Rename and re-order treatment effect
   dplyr::mutate(name = dplyr::case_when(
-      name == "AAS" ~ "AAS",
+      name == "AAS" ~ "ASA",
       name == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
       name == "75_Clopidogrel" ~ "Clopidogrel 75mg",
-      name == "AAS_2.5_Rivaroxaban" ~ "AAS + Rivaroxaban 2.5mg",
-      name == "AAS_10_Prasugrel" ~ "AAS + Prasugrel 10mg",
-      name == "AAS_75_Clopidogrel" ~ "AAS + Clopidogrel 75mg",
+      name == "AAS_2.5_Rivaroxaban" ~ "ASA + Rivaroxaban 2.5mg",
+      name == "AAS_10_Prasugrel" ~ "ASA + Prasugrel 10mg",
+      name == "AAS_75_Clopidogrel" ~ "ASA + Clopidogrel 75mg",
       name == "Pooled_Ticagrelor" ~ "Pooled Ticagrelor"),
       
-      name = factor(name, levels = rev(c("AAS + Prasugrel 10mg",
+      name = factor(name, levels = rev(c("ASA + Prasugrel 10mg",
                                      "Clopidogrel 75mg",
-                                     "AAS + Rivaroxaban 2.5mg",
-                                     "AAS + Clopidogrel 75mg",
+                                     "ASA + Rivaroxaban 2.5mg",
+                                     "ASA + Clopidogrel 75mg",
                                      "Pooled Ticagrelor",
                                      "Rivaroxaban 5mg",
-                                     "AAS"))),
+                                     "ASA"))),
     outcome = factor(outcome, levels = c("MACE",
                                          "Bleeding"))) |> 
   
@@ -678,18 +1038,17 @@ The point estimate represents the median rank. The interval bar shows the 95%
 credible (quantile) interval of the underlying marginal posterior distribution.
 Lastly, the bar plot shows the cumulative distribution function (CDF).  
 
-# Separate Doses Ticagrelor Networks: MACE and Bleeding
+
+
+# Separate Dosages Ticagrelor Networks: MACE and Bleeding Outcomes
 
 ```{r}
 # From now on, all code has been previously commented/explained either in this
 # file or other files. Thus, I won't comment each step again
 ```
 
-## Network (pending)
 
-placeholder
-
-## Forest
+## eFigure 3: Network Plot
 
 
 ```{r}
@@ -745,12 +1104,12 @@ both =
   dplyr::left_join(probs) |>
   dplyr::mutate(
     name = dplyr::case_when(
-      name == "d[AAS]" ~ "AAS",
+      name == "d[AAS]" ~ "ASA",
       name == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
       name == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
-      name == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
-      name == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
-      name == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      name == "d[AAS_2.5_Rivaroxaban]" ~ "ASA + Rivaroxaban 2.5mg",
+      name == "d[AAS_10_Prasugrel]" ~ "ASA + Prasugrel 10mg",
+      name == "d[AAS_75_Clopidogrel]" ~ "ASA + Clopidogrel 75mg",
       name == "d[60_Ticagrelor]" ~ "Ticagrelor 60mg",
     name == "d[90_Ticagrelor]" ~ "Ticagrelor 90mg"),
     
@@ -791,7 +1150,7 @@ forest_fun = function(){
                     atransf = exp,
                     psize = 1.4, # Circle size
                     efac=0, # Remove vertical lines at interval bars
-                    header="Compared with AAS",
+                    header="Compared with ASA",
                     xlab = "Hazard Ratio (log scale)",
                     cex = 1,
                     cex.lab = 1) # X axis label font size
@@ -833,6 +1192,28 @@ graphics::text(1.5+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4),
                  "> 1.00", "> 1.25", "ROPE"))
 }
 
+net_fun = function(data_sub){
+  
+  multinma::set_agd_contrast(data = data_sub,
+                               trt_ref = "ASA",
+                               study = study,
+                               trt = treatment,
+                               y = logHR,
+                               se = std.err,
+                               sample_size = n_patients) |> 
+  
+  igraph::as.igraph() |> 
+    plot(vertex.color = "blue",
+         vertex.label.color = "black",
+         edge.color = "black",
+         layout = igraph::layout.circle,
+         vertex.label.dist = 3,
+         vertex.size=15,
+         vertex.label.cex = 0.8) 
+  
+}
+
+
 # pdf(file = here::here("output", "plots", "supplementary",
 #                       'forest_not_pooled_primary.pdf'),
 #     height=7, width=13)
@@ -843,24 +1224,36 @@ graphics::text(1.5+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4),
 ```
 
 ```{r}
+
+net_fun(subset(data, outcome == "MACE_not_pooled"))
+# net_fun(subset(data, outcome == "safety_not_pooled")) same network
+```
+
+\blandscape
+
+## eFigure 4: Forest Plot
+
+```{r out.width="1\\linewidth"}
 # Show previously saved forest plot
 knitr::include_graphics(here::here("output", "plots", "supplementary",  
                                    'forest_not_pooled_primary.png'))
 
 ```
 
-Treatment effects compared to AAS on MACE and Bleeding outcomes, ordered according
+Left panel: Network of MACE and Bleeding outcomes while separing Ticagrelor's 
+dosages.
+Right panel: 
+Treatment effects compared to ASA on MACE and Bleeding outcomes, ordered according
 to underlying SUCRA values. HR below 1.0 favors the experimental treatment.
 On the left, treatment names are depicted. In the middle,
 forest plot shows each treatment effect median and 95% credible intervals. Gray
 area corresponds to the ROPE (from 0.8 to 1.25 HR). On the right, exact effect
-sizes along with posterior probabilities are shown.
+sizes along with posterior probabilities are shown. Abbreviations: ROPE, region
+of practical equivalence; HR, hazard ratio.
 
-Abbreviations: ROPE, region of practical equivalence; HR, hazard ratio.
+## League Tables
 
-## League tables
-
-### Credible Intervals
+### eTable 8: Median and 95% Credible Intervals
 
 ```{r}
 
@@ -958,19 +1351,18 @@ new = matrix(NA, nrow = 8, ncol = 8)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
-            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
-            "AAS + Clopidogrel 75mg")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "ASA + Rivaroxaban 2.5mg",  "ASA + Prasugrel 10mg",
+            "ASA + Clopidogrel 75mg")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "95% Credible Intervals",
-  )
+  data.frame() |> 
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 8)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Hazard ratios (95% credible interval) for the MACE or Bleeding outcomes.
@@ -980,11 +1372,12 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, the corresponding
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, the corresponding
 HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
 
+\newpage
 
-### Prob < 1
+### eTable 9: Posterior Probabilities of Hazard Ratio < 1.0
 
 ```{r}
 MACE_matrix = 
@@ -1065,19 +1458,17 @@ new = matrix(NA, nrow = 8, ncol = 8)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
-            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
-            "AAS + Clopidogrel 75mg")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "ASA + Rivaroxaban 2.5mg",  "ASA + Prasugrel 10mg",
+            "ASA + Clopidogrel 75mg")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Pr(HR < 1.0)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 8)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 
 
 ```
@@ -1089,10 +1480,12 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, the corresponding
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, the corresponding
 HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
 
-### Prob < 0.8
+\newpage
+
+### eTable 10: Posterior Probabilities of Hazard Ratio < 0.8
 
 ```{r}
 MACE_matrix = 
@@ -1173,19 +1566,17 @@ new = matrix(NA, nrow = 8, ncol = 8)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
-            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
-            "AAS + Clopidogrel 75mg")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "ASA + Rivaroxaban 2.5mg",  "ASA + Prasugrel 10mg",
+            "ASA + Clopidogrel 75mg")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Pr(HR < 0.8)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 8)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 
 
 ```
@@ -1197,11 +1588,13 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is below 0.8 (ie,
 there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
 
-### Prob > 1.25
+\newpage
+
+### eTable 11: Posterior Probabilities of Hazard Ratio > 1.25
 
 ```{r}
 MACE_matrix = 
@@ -1282,19 +1675,17 @@ new = matrix(NA, nrow = 8, ncol = 8)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
-            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
-            "AAS + Clopidogrel 75mg")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "ASA + Rivaroxaban 2.5mg",  "ASA + Prasugrel 10mg",
+            "ASA + Clopidogrel 75mg")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Pr(HR > 1.25)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 8)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 
 
 ```
@@ -1306,11 +1697,13 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is below 0.8 (ie,
 there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
 
-### Prob ROPE
+\newpage
+
+### eTable 12: Posterior Probabilities of Hazard Ratio within the ROPE
 
 ```{r}
 MACE_matrix = 
@@ -1391,19 +1784,17 @@ new = matrix(NA, nrow = 8, ncol = 8)
 new[upper.tri(new)] = MACE_matrix[upper.tri(MACE_matrix)]
 new[lower.tri(new)] = safety_matrix[lower.tri(safety_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
-            "Ticagrelor 90mg", "AAS + Rivaroxaban 2.5mg",  "AAS + Prasugrel 10mg",
-            "AAS + Clopidogrel 75mg")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Ticagrelor 60mg", "Clopidogrel 75mg",
+            "Ticagrelor 90mg", "ASA + Rivaroxaban 2.5mg",  "ASA + Prasugrel 10mg",
+            "ASA + Clopidogrel 75mg")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Pr(ROPE)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 8)) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio within the region of practical equivalence
@@ -1414,10 +1805,12 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is within the ROPE.
 
-## Ranks + SUCRA
+\newpage
+
+## eFigure 5: Ranks and SUCRA
 
 ```{r}
 p1 = 
@@ -1431,23 +1824,23 @@ p1 =
   ) |> 
   dplyr::mutate(
     parameter = dplyr::case_when(
-      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[AAS]" ~ "ASA",
       parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
       parameter == "d[60_Ticagrelor]" ~ "Ticagrelor 60mg",
       parameter == "d[90_Ticagrelor]" ~ "Ticagrelor 90mg",
       parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
-      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
-      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
-      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg"),
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "ASA + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "ASA + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "ASA + Clopidogrel 75mg"),
     
-    parameter = factor(parameter, levels = c("AAS + Prasugrel 10mg",
+    parameter = factor(parameter, levels = c("ASA + Prasugrel 10mg",
                                      "Clopidogrel 75mg",
-                                     "AAS + Rivaroxaban 2.5mg",
-                                     "AAS + Clopidogrel 75mg",
+                                     "ASA + Rivaroxaban 2.5mg",
+                                     "ASA + Clopidogrel 75mg",
                                      "Ticagrelor 60mg",
                                      "Ticagrelor 90mg",
                                      "Rivaroxaban 5mg",
-                                     "AAS")),
+                                     "ASA")),
     
     Outcome = factor(Outcome, levels = c("MACE", "Bleeding"))
     ) |> 
@@ -1463,7 +1856,7 @@ p1 =
   aes(x = rank, y = probability, group = Outcome, color = Outcome,
       linetype = Outcome) +
   geom_line(size = 0.9) +
-  scale_color_manual(values = c("forestgreen", "#802521")) +
+  scale_color_manual(values = c("#5CA881", "#802521")) +
   scale_x_continuous(breaks = seq(1, 7, 1)) +
   scale_y_continuous(breaks = seq(0, 100, 50),
                      limits = c(0, 110)) +
@@ -1498,23 +1891,23 @@ p2 =
   dplyr::bind_rows(mace_sucra, safety_sucra) |> 
   dplyr::mutate(
     parameter = dplyr::case_when(
-      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[AAS]" ~ "ASA",
       parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
       parameter == "d[60_Ticagrelor]" ~ "Ticagrelor 60mg",
       parameter == "d[90_Ticagrelor]" ~ "Ticagrelor 90mg",
       parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
-      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
-      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
-      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg"),
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "ASA + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "ASA + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "ASA + Clopidogrel 75mg"),
     
-    parameter = factor(parameter, levels = rev(c("AAS + Prasugrel 10mg",
+    parameter = factor(parameter, levels = rev(c("ASA + Prasugrel 10mg",
                                      "Clopidogrel 75mg",
-                                     "AAS + Rivaroxaban 2.5mg",
-                                     "AAS + Clopidogrel 75mg",
+                                     "ASA + Rivaroxaban 2.5mg",
+                                     "ASA + Clopidogrel 75mg",
                                      "Ticagrelor 60mg",
                                      "Ticagrelor 90mg",
                                      "Rivaroxaban 5mg",
-                                     "AAS"))),
+                                     "ASA"))),
     outcome = factor(outcome, levels = c("MACE", "Bleeding"))
     ) |> 
   ggplot() +
@@ -1535,7 +1928,7 @@ p2 =
         axis.ticks.y = element_blank())
 ```
 
-```{r, fig.width = 11}
+```{r, fig.width = 11, fig.height = 5}
 # Show both plots together
 p1 + p2 + patchwork::plot_annotation(tag_levels = "A") +
   patchwork::plot_layout(widths = c(5, 1))
@@ -1546,7 +1939,9 @@ outcomes for each treatment.
 Panel B: Heatmap with corresponding SUCRA values. While each row corresponds to
 a treatment, each column depicts one outcome. 
 
-## Ranks
+\elandscape
+
+## eFigure 6: Ranks with Uncertainty 
 
 ```{r}
 rxp = "^rank\\[(.+)]$" 
@@ -1573,23 +1968,23 @@ ranks_MACE$sims |>
   ) |> 
   dplyr::mutate(
     name = dplyr::case_when(
-      name == "AAS" ~ "AAS",
+      name == "AAS" ~ "ASA",
       name == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
       name == "60_Ticagrelor" ~ "Ticagrelor 60mg",
       name == "90_Ticagrelor" ~ "Ticagrelor 90mg",
       name == "75_Clopidogrel" ~ "Clopidogrel 75mg",
-      name == "AAS_2.5_Rivaroxaban" ~ "AAS + Rivaroxaban 2.5mg",
-      name == "AAS_10_Prasugrel" ~ "AAS + Prasugrel 10mg",
-      name == "AAS_75_Clopidogrel" ~ "AAS + Clopidogrel 75mg"),
+      name == "AAS_2.5_Rivaroxaban" ~ "ASA + Rivaroxaban 2.5mg",
+      name == "AAS_10_Prasugrel" ~ "ASA + Prasugrel 10mg",
+      name == "AAS_75_Clopidogrel" ~ "ASA + Clopidogrel 75mg"),
     
-    name = factor(name, levels = rev(c("AAS + Prasugrel 10mg",
+    name = factor(name, levels = rev(c("ASA + Prasugrel 10mg",
                                      "Clopidogrel 75mg",
-                                     "AAS + Rivaroxaban 2.5mg",
-                                     "AAS + Clopidogrel 75mg",
+                                     "ASA + Rivaroxaban 2.5mg",
+                                     "ASA + Clopidogrel 75mg",
                                      "Ticagrelor 60mg",
                                      "Ticagrelor 90mg",
                                      "Rivaroxaban 5mg",
-                                     "AAS"))),
+                                     "ASA"))),
     outcome = factor(outcome, levels = c("MACE",
                                          "Bleeding"))) |> 
   
@@ -1614,17 +2009,34 @@ The point estimate represents the median rank. The interval bar shows the 95%
 credible interval of the underlying marginal posterior distribution. Lastly,
 the bar plot shows the cumulative distribution function (CDF).  
 
+\newpage
 
-# Pooled Ticagrelor Networks: Secondary outcomes
 
-## Networks (pending)
+# Pooled Ticagrelor Networks: Secondary Outcomes
 
-placeholder
+## eFigure 7: Network Plots
 
-## Forest
-
+\textbf{Acute Myocardial Infarction}
 
 ```{r}
+net_fun(subset(data, outcome == "AMI_pooled"))
+
+```
+
+\textbf{Ischemic Stroke, All-cause Mortality, and Cardiovascular Mortality}
+
+```{r}
+net_fun(subset(data, outcome == "stroke_pooled"))
+# net_fun(subset(data, outcome == "cardio_death_pooled")) same network
+# net_fun(subset(data, outcome == "any_death_pooled")) same network
+```
+
+\newpage
+
+
+## eFigure 8: Forest Plot
+
+```{r message=FALSE, warning=FALSE, results=FALSE}
 wrangle_forest_fun = function(network_object,
                               outcome_name){
   
@@ -1676,12 +2088,12 @@ both =
   dplyr::left_join(probs) |>
   dplyr::mutate(
     name = dplyr::case_when(
-      name == "d[AAS]" ~ "AAS",
+      name == "d[AAS]" ~ "ASA",
       name == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
       name == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
-      name == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
-      name == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
-      name == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      name == "d[AAS_2.5_Rivaroxaban]" ~ "ASA + Rivaroxaban 2.5mg",
+      name == "d[AAS_10_Prasugrel]" ~ "ASA + Prasugrel 10mg",
+      name == "d[AAS_75_Clopidogrel]" ~ "ASA + Clopidogrel 75mg",
       name == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
     
     outcome = outcome_name
@@ -1732,7 +2144,7 @@ forest_fun = function(){
                 atransf = exp,
                 psize = 1.4, # Circle size
                 efac=0, # Remove vertical lines at interval bars
-                header="Compared with AAS",
+                header="Compared with ASA",
                 xlab = "Hazard Ratio (log scale)",
                 cex = 1,
                 cex.lab = 1) # X axis label font size
@@ -1786,23 +2198,24 @@ graphics::text(1+c(0.6, 1.2, 1.5, 1.8, 2.1, 2.4),
                  "> 1.00", "> 1.25", "ROPE"))
 }
 
-# pdf(file = here::here("output", "plots", "supplementary",
-#                       'forest_secondary_outcomes.pdf'),
-#     height=11, width=12)
-# 
-# forest_fun()
-# 
-# dev.off()
+pdf(file = here::here("output", "plots", "supplementary",
+                      'forest_secondary_outcomes.pdf'),
+    height=11, width=12)
+
+forest_fun()
+
+dev.off()
 ```
 
-```{r}
+```{r out.width="1.1\\linewidth"}
 # Show previously saved forest plot
 knitr::include_graphics(here::here("output", "plots", "supplementary",
                                    "forest_secondary_outcomes.png"))
 
 ```
 
-Treatment effects compared to AAS on MACE and Bleeding outcomes, ordered according
+
+Treatment effects compared to ASA on MACE and Bleeding outcomes, ordered according
 to underlying SUCRA values. HR below 1.0 favors the experimental treatment.
 On the left, treatment names are depicted. In the middle,
 forest plot shows each treatment effect median and 95% credible intervals. Gray
@@ -1811,9 +2224,14 @@ sizes along with posterior probabilities are shown.
 
 Abbreviations: ROPE, region of practical equivalence; HR, hazard ratio.
 
+\newpage
+
+
+\blandscape
+
 ## League Tables
 
-### Credible Intervals
+### eTables 13-15: Median and 95% Credible Intervals
 
 ```{r fig.height=5}
 
@@ -1863,8 +2281,8 @@ AMI_matrix =
 new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -1872,10 +2290,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Acute Myocardial Infarction: 95% Credible Interval",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7),
+                  caption = "Acute Myocardial Infarction") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Hazard ratios (95% credible interval) for the Acute Myocardial Infarction outcome.
@@ -1883,9 +2300,11 @@ Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 A hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, the corresponding
+For example, in the Rivaroxaban 5mg vs. ASA comparison, the corresponding
 HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
 
+
+\elandscape
 
 
 ```{r}
@@ -1933,7 +2352,7 @@ stroke_matrix =
 new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -1941,10 +2360,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Ischemic Stroke: 95% Credible Interval",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "Ischemic Stroke") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Hazard ratios (95% credible interval) for the Ischemic Stroke outcome.
@@ -1952,7 +2370,7 @@ Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 A hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, the corresponding
+For example, in the Rivaroxaban 5mg vs. ASA comparison, the corresponding
 HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
 
 ```{r}
@@ -2042,17 +2460,16 @@ new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
 new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt()  |> 
-  gt::tab_header(
-    title = "All-cause and Cardiovascular Mortality: 95% Credible Interval",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "All-cause and Cardiovascular Mortality") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Hazard ratios (95% credible interval) for the All-cause or Cardiovascular
@@ -2063,11 +2480,16 @@ Cardiovascular mortality outcome. Comparisons between treatments should be read
 from left to right and the estimate is in the cell in common between the
 column-defining treatment and the row-defining treatment. For both outcomes, a
 hazard ratio < 1.0 favors the column-defining treatment. For example, in the
-Rivaroxaban 5mg vs. AAS comparison for All-cause mortality, the corresponding
+Rivaroxaban 5mg vs. ASA comparison for All-cause mortality, the corresponding
 HR (95% CrI) was `r new[1,2]`, favoring Rivaroxaban 5mg (ie, HR < 1.0).
 
+\newpage
 
-### Prob < 1
+
+\blandscape
+
+
+### eTables 16-18: Posterior Probabilities of Hazard Ratio < 1.0
 
 ```{r}
 
@@ -2116,8 +2538,8 @@ AMI_matrix =
 new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -2125,10 +2547,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Acute Myocardial Infarction: Pr(HR < 1.0)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7),
+                  caption = "Acute Myocardial Infarction") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio < 1.0 for the Acute Myocardial
@@ -2136,9 +2557,12 @@ Infarction outcome. Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 A hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is below 1.0 (ie,
 there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
+
+
+\elandscape
 
 
 ```{r}
@@ -2185,7 +2609,7 @@ stroke_matrix =
 new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -2193,10 +2617,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Ischemic Stroke: Pr(HR < 1.0)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "Ischemic Stroke") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio < 1.0 for the Ischemic Stroke outcome.
@@ -2204,7 +2627,7 @@ Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 A hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is below 1.0 (ie,
 there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
 
@@ -2294,17 +2717,16 @@ new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
 new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt()  |> 
-  gt::tab_header(
-    title = "All-cause and Cardiovascular Mortality: Pr(HR < 1.0)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "All-cause and Cardiovascular Mortality") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio < 1.0 for the All-cause or
@@ -2315,11 +2737,16 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 Comparisons between treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for All-cause mortality,
+For example, in the Rivaroxaban 5mg vs. ASA comparison for All-cause mortality,
 there was a posterior probability of `r new[1,2]`% that the hazard ratio is below
 1.0 (ie, there was a `r new[1,2]`% probability for Rivaroxaban 5mg superiority).
 
-### Prob < 0.8
+\newpage
+
+
+\blandscape
+
+### eTables 19-21: Posterior Probabilities of Hazard Ratio < 0.8
 
 ```{r}
 
@@ -2368,8 +2795,8 @@ AMI_matrix =
 new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -2377,10 +2804,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Acute Myocardial Infarction: Pr(HR < 0.8)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7),
+                  caption = "Acute Myocardial Infarction") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio < 0.80 for the Acute Myocardial
@@ -2388,8 +2814,11 @@ Infarction outcome. Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 A hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is below 0.80.
+
+
+\elandscape
 
 
 ```{r}
@@ -2436,7 +2865,7 @@ stroke_matrix =
 new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -2444,10 +2873,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Ischemic Stroke: Pr(HR < 0.8)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "Ischemic Stroke") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio < 0.80 for the Ischemic Stroke outcome.
@@ -2455,7 +2883,7 @@ Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 A hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is below 0.80.
 
 ```{r}
@@ -2543,17 +2971,16 @@ new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
 new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt()  |> 
-  gt::tab_header(
-    title = "All-cause and Cardiovascular Mortality: Pr(HR < 0.8)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "All-cause and Cardiovascular Mortality") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio < 0.80 for the All-cause or
@@ -2564,11 +2991,16 @@ Treatments are shown in the diagonal. Results to the right of this diagonal
 Comparisons between treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for All-cause mortality,
+For example, in the Rivaroxaban 5mg vs. ASA comparison for All-cause mortality,
 there was a posterior probability of `r new[1,2]`% that the hazard ratio is below
 0.80.
 
-### Prob > 1.25
+\newpage
+
+
+\blandscape
+
+### eTables 22-24: Posterior Probabilities of Hazard Ratio > 1.25
 
 ```{r}
 
@@ -2617,8 +3049,8 @@ AMI_matrix =
 new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -2626,10 +3058,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Acute Myocardial Infarction: Pr(HR > 1.25)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7),
+                  caption = "Acute Myocardial Infarction") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio > 1.25 for the Acute Myocardial
@@ -2637,8 +3068,11 @@ Infarction outcome. Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is above 1.25.
+
+
+\elandscape
 
 
 ```{r}
@@ -2685,7 +3119,7 @@ stroke_matrix =
 new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -2693,10 +3127,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Ischemic Stroke: Pr(HR > 1.25)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "Ischemic Stroke") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio > 1.25 for the Ischemic Stroke outcome.
@@ -2704,7 +3137,7 @@ Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is above 1.25.
 
 
@@ -2793,17 +3226,16 @@ new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
 new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt()  |> 
-  gt::tab_header(
-    title = "All-cause and Cardiovascular Mortality: Pr(HR > 1.25)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "All-cause and Cardiovascular Mortality") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio > 1.25 for the All-cause or
@@ -2814,11 +3246,16 @@ correspond to the Cardiovascular mortality outcome. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for MACE, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison for MACE, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is above 1.25.
 
+\newpage
 
-### Prob ROPE
+
+\blandscape
+
+
+### eTables 25-27: Posterior Probabilities of Hazard Ratio within the ROPE
 
 ```{r}
 
@@ -2867,8 +3304,8 @@ AMI_matrix =
 new = matrix(NA, nrow = 7, ncol = 7)
 new[upper.tri(new)] = AMI_matrix[upper.tri(AMI_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg", 
-          "AAS + Prasugrel 10mg", "AAS + Clopidogrel 75mg", "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg", 
+          "ASA + Prasugrel 10mg", "ASA + Clopidogrel 75mg", "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -2876,10 +3313,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Acute Myocardial Infarction: Pr(ROPE)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 7),
+                  caption = "Acute Myocardial Infarction") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio within the region of practical equivalence
@@ -2888,8 +3324,11 @@ Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is within the ROPE.
+
+
+\elandscape
 
 
 ```{r}
@@ -2936,7 +3375,7 @@ stroke_matrix =
 new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = stroke_matrix[upper.tri(stroke_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
@@ -2944,10 +3383,9 @@ diag(new) = ttnames
 new |> 
   data.frame() %>%
   base::replace(is.na(.), " ") |> 
-  gt::gt() |> 
-  gt::tab_header(
-    title = "Ischemic Stroke: Pr(ROPE)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "Ischemic Stroke") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio within the region of practical equivalence
@@ -2956,7 +3394,7 @@ Treatments are shown in the diagonal. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison, there was a
+For example, in the Rivaroxaban 5mg vs. ASA comparison, there was a
 posterior probability of `r new[1,2]`% that the hazard ratio is within the ROPE.
 
 
@@ -3045,17 +3483,16 @@ new = matrix(NA, nrow = 5, ncol = 5)
 new[upper.tri(new)] = any_matrix[upper.tri(any_matrix)]
 new[lower.tri(new)] = cardio_matrix[lower.tri(cardio_matrix)]
 
-ttnames = c("AAS", "Rivaroxaban 5mg", "Clopidogrel 75mg", "AAS + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
+ttnames = c("ASA", "Rivaroxaban 5mg", "Clopidogrel 75mg", "ASA + Rivaroxaban 2.5mg",  "Pooled Ticagrelor")
 
 # Rename diagonal with treatment names
 diag(new) = ttnames
 
 new |> 
   data.frame() |> 
-  gt::gt()  |> 
-  gt::tab_header(
-    title = "All-cause and Cardiovascular Mortality: Pr(ROPE)",
-  )
+  kableExtra::kbl(booktabs = T, col.names	= rep(" ", 5),
+                  caption = "All-cause and Cardiovascular Mortality") |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
 ```
 
 Posterior probabilities (%) of hazard ratio within the region of practical
@@ -3067,11 +3504,16 @@ correspond to the Cardiovascular mortality outcome. Comparisons between
 treatments should be read from left to right and the estimate is in the cell in
 common between the column-defining treatment and the row-defining treatment. 
 For both outcomes, a hazard ratio < 1.0 favors the column-defining treatment.
-For example, in the Rivaroxaban 5mg vs. AAS comparison for All-cause mortality,
+For example, in the Rivaroxaban 5mg vs. ASA comparison for All-cause mortality,
 there was a posterior probability of `r new[1,2]`% that the hazard ratio is
 within the ROPE.
 
-## Ranks + SUCRA
+\newpage
+
+
+\blandscape
+
+## eFigure 9: Ranks + SUCRA
 
 ```{r}
 p1 = 
@@ -3093,21 +3535,21 @@ p1 =
   ) |> 
   dplyr::mutate(
     parameter = dplyr::case_when(
-      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[AAS]" ~ "ASA",
       parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
       parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
-      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
-      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
-      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "ASA + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "ASA + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "ASA + Clopidogrel 75mg",
       parameter == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
     
-    parameter = factor(parameter, levels = c("AAS + Prasugrel 10mg",
+    parameter = factor(parameter, levels = c("ASA + Prasugrel 10mg",
                                      "Clopidogrel 75mg",
-                                     "AAS + Rivaroxaban 2.5mg",
-                                     "AAS + Clopidogrel 75mg",
+                                     "ASA + Rivaroxaban 2.5mg",
+                                     "ASA + Clopidogrel 75mg",
                                      "Pooled Ticagrelor",
                                      "Rivaroxaban 5mg",
-                                     "AAS")),
+                                     "ASA")),
     
     Outcome = factor(Outcome, levels = c("AMI", "Stroke",
                                          "All-cause Mortality",
@@ -3184,21 +3626,21 @@ p2 =
   dplyr::mutate(
     
     parameter = dplyr::case_when(
-      parameter == "d[AAS]" ~ "AAS",
+      parameter == "d[AAS]" ~ "ASA",
       parameter == "d[5_Rivaroxaban]" ~ "Rivaroxaban 5mg",
       parameter == "d[75_Clopidogrel]" ~ "Clopidogrel 75mg",
-      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "AAS + Rivaroxaban 2.5mg",
-      parameter == "d[AAS_10_Prasugrel]" ~ "AAS + Prasugrel 10mg",
-      parameter == "d[AAS_75_Clopidogrel]" ~ "AAS + Clopidogrel 75mg",
+      parameter == "d[AAS_2.5_Rivaroxaban]" ~ "ASA + Rivaroxaban 2.5mg",
+      parameter == "d[AAS_10_Prasugrel]" ~ "ASA + Prasugrel 10mg",
+      parameter == "d[AAS_75_Clopidogrel]" ~ "ASA + Clopidogrel 75mg",
       parameter == "d[Pooled_Ticagrelor]" ~ "Pooled Ticagrelor"),
     
-    parameter = factor(parameter, levels = rev(c("AAS + Prasugrel 10mg",
-                                                 "AAS + Clopidogrel 75mg",
+    parameter = factor(parameter, levels = rev(c("ASA + Prasugrel 10mg",
+                                                 "ASA + Clopidogrel 75mg",
                                                  "Clopidogrel 75mg",
                                                  "Pooled Ticagrelor",
-                                                 "AAS + Rivaroxaban 2.5mg",
+                                                 "ASA + Rivaroxaban 2.5mg",
                                                  "Rivaroxaban 5mg",
-                                                 "AAS"))),
+                                                 "ASA"))),
     outcome = factor(outcome, levels = c("AMI", "Stroke",
                                          "All-cause Mortality",
                                          "Cardiovascular Mortality"))
@@ -3223,21 +3665,24 @@ p2 =
         panel.background = element_rect(fill = "white"))
 ```
 
-```{r}
+```{r fig.width = 11, fig.height = 6}
 p1 + p2 + patchwork::plot_annotation(tag_levels = "A") +
   patchwork::plot_layout(widths = c(4, 2))
 ```
 
 Panel A: Ranking probabilities for Acute Myocardical Infarction (AMI),
 Stroke, All-cause and Cardiovascular Mortality outcomes for each treatment. There
-are only AMI rankings for "AAS + Prasugrel 10mg" and "AAS + Clopidogrel 75mg"
+are only AMI rankings for "ASA + Prasugrel 10mg" and "ASA + Clopidogrel 75mg"
 because there was no data available for other outcomes in corresponding studies.
 Panel B: Heatmap with corresponding SUCRA values. While each row corresponds to
 a treatment, each column depicts one outcome. 
 
-## Ranks
 
-```{r}
+\elandscape
+
+## eFigure 10: Ranks with Uncertainty
+
+```{r fig.width = 10}
 rxp = "^rank\\[(.+)]$" 
 
 ranks_AMI = 
@@ -3282,21 +3727,21 @@ ranks_AMI$sims |>
   ) |> 
   dplyr::mutate(
      name = dplyr::case_when(
-      name == "AAS" ~ "AAS",
+      name == "AAS" ~ "ASA",
       name == "5_Rivaroxaban" ~ "Rivaroxaban 5mg",
       name == "75_Clopidogrel" ~ "Clopidogrel 75mg",
-      name == "AAS_2.5_Rivaroxaban" ~ "AAS + Rivaroxaban 2.5mg",
-      name == "AAS_10_Prasugrel" ~ "AAS + Prasugrel 10mg",
-      name == "AAS_75_Clopidogrel" ~ "AAS + Clopidogrel 75mg",
+      name == "AAS_2.5_Rivaroxaban" ~ "ASA + Rivaroxaban 2.5mg",
+      name == "AAS_10_Prasugrel" ~ "ASA + Prasugrel 10mg",
+      name == "AAS_75_Clopidogrel" ~ "ASA + Clopidogrel 75mg",
       name == "Pooled_Ticagrelor" ~ "Pooled Ticagrelor"),
     
-    name = factor(name, levels = rev(c("AAS + Prasugrel 10mg",
-                                                 "AAS + Clopidogrel 75mg",
+    name = factor(name, levels = rev(c("ASA + Prasugrel 10mg",
+                                                 "ASA + Clopidogrel 75mg",
                                                  "Clopidogrel 75mg",
                                                  "Pooled Ticagrelor",
-                                                 "AAS + Rivaroxaban 2.5mg",
+                                                 "ASA + Rivaroxaban 2.5mg",
                                                  "Rivaroxaban 5mg",
-                                                 "AAS"))),
+                                                 "ASA"))),
     outcome = factor(outcome, levels = c("AMI", "Stroke",
                                          "All-cause Mortality",
                                          "Cardiovascular Mortality"))) |> 
@@ -3321,3 +3766,176 @@ there are a point estimate, interval bar, and bar plot for each treatment (Y-axi
 The point estimate represents the median rank. The interval bar shows the 95%
 credible (quantile) interval of the underlying marginal posterior distribution.
 Lastly, the bar plot shows the cumulative distribution function (CDF).  
+
+\newpage
+
+
+\blandscape
+
+# CINeMA
+
+```{r}
+cinema = rio::import(here::here("data", "cinema.xlsx")) 
+
+cinema = 
+  cinema |> 
+  
+  dplyr::mutate(
+  # "4 levels of confidence of the GRADE approach: 
+  #  very low, low, moderate, or high"
+      
+  # "One may start at high confidence and drop the level of confidence by 1 step
+  # for each domain with some concerns, and by 2 levels for each domain with
+  # major concerns"
+  # from DOI: 10.1371/journal.pmed.1003082
+  
+  "Overall rating" = "High",
+  
+  "Overall rating" = dplyr::case_when(
+    Incoherence == "Major concerns" ~ "Low"),
+  
+  "Overall rating" = dplyr::case_when(
+    Imprecision == "No concerns" ~ "Low",
+    Imprecision == "Some concerns" ~ "Very Low",
+    Imprecision == "Major concerns" ~ "Very Low"),
+  )
+
+# Customize colors
+
+# https://haozhu233.github.io/kableExtra/awesome_table_in_pdf.pdf
+
+cinema$`Within-study bias` = kableExtra::cell_spec(
+  cinema$`Within-study bias`,
+  color = "white",
+  background = ifelse(cinema$`Within-study bias` == "Some concerns",
+                      "#E7B03C", "#5CA881")
+)
+
+cinema$`Reporting bias` = kableExtra::cell_spec(
+  cinema$`Reporting bias`,
+  color = "white",
+  background = ifelse(cinema$`Reporting bias` == "Suspected",
+                      "#E7B03C", "#5CA881")
+)
+
+cinema$`Indirectness` = kableExtra::cell_spec(
+  cinema$`Indirectness`,
+  color = "white",
+  background = ifelse(cinema$`Indirectness` == "No concerns",
+                      "#5CA881", "#E7B03C")
+)
+
+cinema$`Imprecision` = kableExtra::cell_spec(
+  cinema$`Imprecision`,
+  color = "white",
+  background = ifelse(cinema$`Imprecision` == "No concerns",
+                      "#5CA881", 
+                      ifelse(cinema$`Imprecision` == "Some concerns",
+                             "#E7B03C", "#EA4025"))
+)
+
+cinema$`Heterogeneity` = kableExtra::cell_spec(
+  cinema$`Heterogeneity`,
+  background = "#B5B5B5")
+
+cinema$`Incoherence` = kableExtra::cell_spec(
+  cinema$`Incoherence`,
+  color = "white",
+  background = ifelse(cinema$`Incoherence` == "No concerns",
+                      "#5CA881", "#EA4025")
+)
+
+cinema$`Overall rating` = kableExtra::cell_spec(
+  cinema$`Overall rating`,
+  color = "white",
+  background = ifelse(cinema$`Overall rating` == "Low",
+                      "#EA4025", "#A32A31")
+)
+
+# Create function to automate tables
+
+tab_fun = function(network, name){
+  
+cinema |> 
+  dplyr::filter(`Network type` == network &
+                Outcome == name) |> 
+  dplyr::select(-c(1:2)) |> 
+  kableExtra::kbl(booktabs = T, escape = F) |> 
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"))
+  
+}
+```
+
+## eTables 28-33: Pooled Ticagrelor Networks
+
+### MACE
+
+```{r}
+tab_fun(network = "Pooled Ticagrelor",
+        name = "MACE")
+```
+
+\newpage
+
+### Bleeding
+
+```{r}
+tab_fun(network = "Pooled Ticagrelor",
+        name = "Safety")
+```
+
+\newpage
+
+### Acute Myocardial Infarction
+
+```{r}
+tab_fun(network = "Pooled Ticagrelor",
+        name = "AMI")
+```
+
+\newpage
+
+### Ischemic Stroke
+
+```{r}
+tab_fun(network = "Pooled Ticagrelor",
+        name = "Ischemic Stroke")
+```
+
+### All-cause Mortality
+
+```{r}
+tab_fun(network = "Pooled Ticagrelor",
+        name = "All-cause Mortality")
+```
+
+\newpage
+
+### Cardiovascular Mortality
+
+```{r}
+tab_fun(network = "Pooled Ticagrelor",
+        name = "Cardiovascular Mortality")
+```
+
+\newpage
+
+## eTables 34-35: Separate Dosages Ticagrelor Networks
+
+### MACE
+
+```{r}
+tab_fun(network = "Pooled Ticagrelor",
+        name = "MACE")
+```
+
+\newpage
+
+### Bleeding
+
+```{r}
+tab_fun(network = "Pooled Ticagrelor",
+        name = "Safety")
+```
+
+\elandscape
